@@ -88,6 +88,8 @@ const hudCoverage = document.getElementById("coverage-pct")!;
 const hudElapsed = document.getElementById("elapsed-time")!;
 const hudPhase = document.getElementById("agent-phase")!;
 const hudAiCalls = document.getElementById("ai-calls")!;
+const hudWind = document.getElementById("wind-info")!;
+const hudDaytime = document.getElementById("daytime-info")!;
 const hudBriefing = document.getElementById("briefing")!;
 const connStatus = document.getElementById("connection-status")!;
 const connText = connStatus.querySelector("span")!;
@@ -121,6 +123,39 @@ function updateHUD(state: StateUpdate): void {
     if (state.agent_info.briefing) {
       hudBriefing.style.display = "block";
       hudBriefing.textContent = state.agent_info.briefing;
+    }
+
+    // Weather HUD
+    if (state.agent_info.weather) {
+      const w = state.agent_info.weather;
+      const dir = ((w.wind_direction * 180) / Math.PI).toFixed(0);
+      hudWind.textContent = `${w.wind_speed.toFixed(1)} m/s ${dir}°${w.gusting ? " GUST" : ""}`;
+    }
+
+    // Day/night cycle — update lighting
+    if (state.agent_info.daycycle) {
+      const dc = state.agent_info.daycycle;
+      const DAY_LABELS: Record<string, string> = {
+        dawn: "Dawn",
+        day: "Day",
+        dusk: "Dusk",
+        night: "Night",
+      };
+      hudDaytime.textContent = DAY_LABELS[dc.phase] ?? dc.phase;
+
+      // Update sun light
+      sunLight.intensity = 0.3 + dc.sun_intensity * 1.5;
+      sunLight.color.setRGB(dc.sun_color[0], dc.sun_color[1], dc.sun_color[2]);
+
+      // Update ambient
+      ambientLight.intensity = 0.15 + dc.sun_intensity * 0.45;
+
+      // Update scene background (darker at night)
+      const bg = 0.02 + dc.sun_intensity * 0.06;
+      scene.background = new THREE.Color(bg, bg, bg + 0.02);
+
+      // Update fog density (denser at night for atmosphere)
+      (scene.fog as THREE.FogExp2).density = 0.0008 + (1 - dc.sun_intensity) * 0.001;
     }
   }
 }

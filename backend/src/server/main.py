@@ -20,9 +20,13 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src.agents.chat_handler import ChatHandler
 from src.agents.coordinator import SwarmCoordinator
+from src.simulation.daycycle import DayCycle
 from src.simulation.engine import create_world, get_coverage_pct, tick
+from src.simulation.metrics import MetricsTracker
+from src.simulation.replay import ReplayRecorder
 from src.simulation.serializer import serialize_state
 from src.simulation.types import Command, SimConfig, Vec3, WorldState
+from src.simulation.weather import WeatherSystem
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -176,6 +180,11 @@ async def simulation_loop() -> None:
     rng = np.random.default_rng(sim_config.terrain_seed)
     dt = 1.0 / sim_config.tick_rate
     coordinator = SwarmCoordinator(sim_config)
+    weather = WeatherSystem(sim_config.terrain_seed, sim_config.terrain_size)
+    daycycle = DayCycle(day_length=300.0)
+    metrics = MetricsTracker()
+    replay = ReplayRecorder(record_interval=5)
+    replay.start()
 
     logger.info(
         "Simulation ready: %d drones, %d survivors, %dx%d terrain",
@@ -213,6 +222,11 @@ async def simulation_loop() -> None:
             world = create_world(reset_config)
             rng = np.random.default_rng(new_seed)
             coordinator = SwarmCoordinator(reset_config)
+            weather = WeatherSystem(new_seed, reset_config.terrain_size)
+            daycycle = DayCycle(day_length=300.0)
+            metrics = MetricsTracker()
+            replay = ReplayRecorder(record_interval=5)
+            replay.start()
             pending_commands = []
             # All clients need fresh terrain
             new_clients.update(clients)
@@ -230,16 +244,25 @@ async def simulation_loop() -> None:
             world = tick(world, dt * sim_speed, commands, rng=rng, config=sim_config)
             current_world = world
 
+            # Update environmental systems
+            weather.update(world.elapsed)
+            daycycle.update(world.elapsed)
+            metrics.record_tick(world)
+            replay.record(world)
+
             # Log significant events
             for event in world.events:
                 logger.info("Event [tick %d]: %s", world.tick, event.type.name)
 
-            # Build agent info for frontend
+            # Build agent + environment info for frontend
             agent_info = {
                 "phase": coordinator.phase.name,
                 "briefing": coordinator.mission_planner.latest_briefing,
                 "planner_calls": coordinator.mission_planner.call_count,
                 "reasoner_calls": coordinator.drone_reasoner.call_count,
+                "weather": weather.serialize(),
+                "daycycle": daycycle.serialize(),
+                "metrics": metrics.serialize(),
             }
 
             # Prepare both versions of state

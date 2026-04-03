@@ -56,11 +56,40 @@ export interface StateUpdate {
   agent_info?: AgentInfo;
 }
 
+export interface WeatherInfo {
+  wind_speed: number;
+  wind_direction: number;
+  gusting: boolean;
+}
+
+export interface DayCycleInfo {
+  time_of_day: number;
+  sun_intensity: number;
+  sun_color: [number, number, number];
+  sensor_effectiveness: number;
+  phase: string;
+}
+
+export interface MetricsInfo {
+  elapsed: number;
+  coverage_pct: number;
+  survivors_found: number;
+  active_drones: number;
+  avg_battery: number;
+  efficiency_score: number;
+  coverage_rate: number;
+  time_to_first_discovery: number | null;
+  time_to_full_coverage: number | null;
+}
+
 export interface AgentInfo {
   phase: string;
   briefing: string;
   planner_calls: number;
   reasoner_calls: number;
+  weather?: WeatherInfo;
+  daycycle?: DayCycleInfo;
+  metrics?: MetricsInfo;
 }
 
 export interface MissionBriefing {
