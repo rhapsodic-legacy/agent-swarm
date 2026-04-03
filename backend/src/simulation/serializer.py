@@ -85,6 +85,7 @@ def _serialize_survivor(survivor: Survivor) -> dict:
         "discovered": survivor.discovered,
         "discovered_by": survivor.discovered_by,
         "discovered_at_tick": survivor.discovered_at_tick,
+        "mobile": survivor.mobile,
     }
 
 

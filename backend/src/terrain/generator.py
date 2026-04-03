@@ -225,10 +225,15 @@ def _place_survivors(
     for i, cell_idx in enumerate(chosen_indices):
         row, col = divmod(int(cell_idx), terrain_width)
         elevation = float(flat_heightmap[cell_idx])
+        # ~40% of survivors are mobile wanderers
+        is_mobile = bool(rng.random() < 0.4)
+        speed = float(rng.uniform(0.3, 0.8)) if is_mobile else 0.5
         survivors.append(
             Survivor(
                 id=i,
                 position=Vec3(x=float(col), y=elevation, z=float(row)),
+                mobile=is_mobile,
+                speed=speed,
             )
         )
 

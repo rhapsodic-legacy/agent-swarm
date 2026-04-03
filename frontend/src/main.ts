@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { SwarmClient } from "@/network/client";
-import type { StateUpdate } from "@/network/types";
+import type { HazardInfo, StateUpdate } from "@/network/types";
 import { TerrainRenderer } from "@/scene/terrain";
 import { DroneRenderer } from "@/entities/drones";
 import { FogOfWarRenderer } from "@/fog/fogOfWar";
@@ -79,6 +79,66 @@ const overlayRenderer = new OverlayRenderer(scene, 100, 50);
 // ============================================================================
 
 let latestState: StateUpdate | null = null;
+
+// Hazard visualization
+let hazardMeshes: THREE.Mesh[] = [];
+let hazardsBuilt = false;
+
+function buildHazardMeshes(hazards: HazardInfo[]): void {
+  // Remove old hazard meshes
+  for (const m of hazardMeshes) {
+    scene.remove(m);
+    m.geometry.dispose();
+    (m.material as THREE.Material).dispose();
+  }
+  hazardMeshes = [];
+
+  for (const h of hazards) {
+    const isNoFly = h.type === "no_fly_zone";
+    const color = isNoFly ? 0xff0000 : 0xaa00ff;
+    const opacity = isNoFly ? 0.15 : 0.12;
+
+    // Fill circle
+    const circleGeo = new THREE.CircleGeometry(h.radius, 48);
+    const circleMat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const circleMesh = new THREE.Mesh(circleGeo, circleMat);
+    circleMesh.rotation.x = -Math.PI / 2; // lay flat on XZ plane
+    circleMesh.position.set(h.center[0], 0.5, h.center[2]); // slightly above ground
+    scene.add(circleMesh);
+    hazardMeshes.push(circleMesh);
+
+    // Ring outline
+    const ringGeo = new THREE.RingGeometry(h.radius - 0.5, h.radius, 48);
+    const ringMat = new THREE.MeshBasicMaterial({
+      color,
+      transparent: true,
+      opacity: opacity + 0.15,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
+    ringMesh.rotation.x = -Math.PI / 2;
+    ringMesh.position.set(h.center[0], 0.6, h.center[2]);
+    scene.add(ringMesh);
+    hazardMeshes.push(ringMesh);
+  }
+}
+
+function clearHazardMeshes(): void {
+  for (const m of hazardMeshes) {
+    scene.remove(m);
+    m.geometry.dispose();
+    (m.material as THREE.Material).dispose();
+  }
+  hazardMeshes = [];
+  hazardsBuilt = false;
+}
 
 // ============================================================================
 // HUD
@@ -184,6 +244,9 @@ const client = new SwarmClient(
       terrainRenderer.buildFromData(state.terrain);
       fogRenderer.initialize(state.terrain.width, state.terrain.height);
 
+      // Clear hazards so they are rebuilt with the new terrain
+      clearHazardMeshes();
+
       // Re-center camera on terrain
       const cx = state.terrain.width / 2;
       const cz = state.terrain.height / 2;
@@ -191,6 +254,13 @@ const client = new SwarmClient(
       camera.position.set(cx + 100, 180, cz + 100);
 
       console.log("[DroneSwarm] Terrain built, visualization active");
+    }
+
+    // Build hazard meshes once when data first arrives
+    if (!hazardsBuilt && state.agent_info?.hazards && state.agent_info.hazards.length > 0) {
+      buildHazardMeshes(state.agent_info.hazards);
+      hazardsBuilt = true;
+      console.log("[DroneSwarm] Hazards visualized:", state.agent_info.hazards.length);
     }
 
     latestState = state;

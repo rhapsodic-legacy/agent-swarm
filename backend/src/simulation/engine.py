@@ -19,6 +19,7 @@ from src.simulation.drone import (
     update_drone_battery,
     update_drone_physics,
 )
+from src.simulation.survivors import update_survivors
 from src.simulation.types import (
     FOG_EXPLORED,
     FOG_UNEXPLORED,
@@ -119,8 +120,14 @@ def tick(
             new_drones.append(d)
         drones = new_drones
 
+    # --- 4b. Update mobile survivors (random walk) ---
+    if rng is not None:
+        updated_survivors = update_survivors(world.survivors, world.terrain, dt, rng)
+    else:
+        updated_survivors = world.survivors
+
     # --- 5. Detect survivors ---
-    survivors = list(world.survivors)
+    survivors = list(updated_survivors)
     for d in drones:
         if d.status == DroneStatus.FAILED:
             continue

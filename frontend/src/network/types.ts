@@ -82,6 +82,13 @@ export interface MetricsInfo {
   time_to_full_coverage: number | null;
 }
 
+export interface HazardInfo {
+  id: number;
+  type: "no_fly_zone" | "signal_jammer";
+  center: [number, number, number];
+  radius: number;
+}
+
 export interface AgentInfo {
   phase: string;
   briefing: string;
@@ -90,6 +97,7 @@ export interface AgentInfo {
   weather?: WeatherInfo;
   daycycle?: DayCycleInfo;
   metrics?: MetricsInfo;
+  hazards?: HazardInfo[];
 }
 
 export interface MissionBriefing {

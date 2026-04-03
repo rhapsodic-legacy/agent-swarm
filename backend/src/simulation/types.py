@@ -110,6 +110,8 @@ class Survivor:
     discovered: bool = False
     discovered_by: int | None = None  # drone id
     discovered_at_tick: int | None = None
+    mobile: bool = False  # whether this survivor wanders
+    speed: float = 0.5  # movement speed in m/s
 
 
 @dataclass(frozen=True)

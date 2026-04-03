@@ -22,6 +22,7 @@ from src.agents.chat_handler import ChatHandler
 from src.agents.coordinator import SwarmCoordinator
 from src.simulation.daycycle import DayCycle
 from src.simulation.engine import create_world, get_coverage_pct, tick
+from src.simulation.hazards import HazardSystem
 from src.simulation.metrics import MetricsTracker
 from src.simulation.replay import ReplayRecorder
 from src.simulation.serializer import serialize_state
@@ -187,6 +188,9 @@ async def simulation_loop() -> None:
     dt = 1.0 / sim_config.tick_rate
     coordinator = SwarmCoordinator(sim_config)
     weather = WeatherSystem(sim_config.terrain_seed, sim_config.terrain_size)
+    hazards = HazardSystem(
+        sim_config.terrain_size, sim_config.terrain_size, sim_config.terrain_seed
+    )
     daycycle = DayCycle(day_length=300.0)
     metrics = MetricsTracker()
     replay = ReplayRecorder(record_interval=5)
@@ -235,6 +239,7 @@ async def simulation_loop() -> None:
             rng = np.random.default_rng(new_seed)
             coordinator = SwarmCoordinator(reset_config)
             weather = WeatherSystem(new_seed, reset_config.terrain_size)
+            hazards = HazardSystem(reset_config.terrain_size, reset_config.terrain_size, new_seed)
             daycycle = DayCycle(day_length=day_length)
             metrics = MetricsTracker()
             replay = ReplayRecorder(record_interval=5)
@@ -275,6 +280,7 @@ async def simulation_loop() -> None:
                 "weather": weather.serialize(),
                 "daycycle": daycycle.serialize(),
                 "metrics": metrics.serialize(),
+                "hazards": hazards.serialize(),
             }
 
             # Prepare both versions of state
