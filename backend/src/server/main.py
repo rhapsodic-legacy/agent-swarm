@@ -59,6 +59,8 @@ sim_reset_requested = False
 chat_handler = ChatHandler()
 # Shared reference to current world state (read by chat handler)
 current_world: WorldState | None = None
+# Pending reset config (set by UI, consumed by sim loop)
+pending_reset_config: dict | None = None
 
 
 def parse_command(msg: dict) -> Command | None:
@@ -89,8 +91,12 @@ def parse_command(msg: dict) -> Command | None:
         elif action == "set_speed":
             sim_speed = float(msg.get("value", 1.0))
         elif action == "reset":
+            global pending_reset_config
             sim_reset_requested = True
             sim_running = True
+            # Store any config overrides sent with reset
+            config_data = msg.get("config")
+            pending_reset_config = config_data if isinstance(config_data, dict) else None
         return None
     return None
 
@@ -173,7 +179,7 @@ async def _handle_chat(websocket: WebSocket, message: str) -> None:
 
 async def simulation_loop() -> None:
     """Main simulation loop — runs as a background async task."""
-    global pending_commands, sim_reset_requested, current_world
+    global pending_commands, sim_reset_requested, current_world, pending_reset_config
 
     logger.info("Initializing simulation world...")
     world = create_world(sim_config)
@@ -200,30 +206,36 @@ async def simulation_loop() -> None:
         # Handle reset
         if sim_reset_requested:
             sim_reset_requested = False
-            # New random seed for variety
             new_seed = int(time.time()) % 100000
+
+            # Apply user config overrides if provided
+            cfg = pending_reset_config or {}
+            pending_reset_config = None
             reset_config = SimConfig(
-                terrain_size=sim_config.terrain_size,
+                terrain_size=int(cfg.get("terrain_size", sim_config.terrain_size)),
                 terrain_seed=new_seed,
-                max_elevation=sim_config.max_elevation,
-                drone_count=sim_config.drone_count,
+                max_elevation=float(cfg.get("max_elevation", sim_config.max_elevation)),
+                drone_count=int(cfg.get("drone_count", sim_config.drone_count)),
                 tick_rate=sim_config.tick_rate,
-                survivor_count=sim_config.survivor_count,
-                drone_max_speed=sim_config.drone_max_speed,
-                drone_sensor_range=sim_config.drone_sensor_range,
-                drone_comms_range=sim_config.drone_comms_range,
-                drone_battery_drain_rate=sim_config.drone_battery_drain_rate,
+                survivor_count=int(cfg.get("survivor_count", sim_config.survivor_count)),
+                drone_max_speed=float(cfg.get("drone_speed", sim_config.drone_max_speed)),
+                drone_sensor_range=float(cfg.get("sensor_range", sim_config.drone_sensor_range)),
+                drone_comms_range=float(cfg.get("comms_range", sim_config.drone_comms_range)),
+                drone_battery_drain_rate=float(
+                    cfg.get("battery_drain", sim_config.drone_battery_drain_rate)
+                ),
                 drone_battery_critical=sim_config.drone_battery_critical,
                 sensor_failure_prob=sim_config.sensor_failure_prob,
                 comms_failure_prob=sim_config.comms_failure_prob,
                 fog_stale_ticks=sim_config.fog_stale_ticks,
                 drone_cruise_altitude=sim_config.drone_cruise_altitude,
             )
+            day_length = float(cfg.get("day_length", 300.0))
             world = create_world(reset_config)
             rng = np.random.default_rng(new_seed)
             coordinator = SwarmCoordinator(reset_config)
             weather = WeatherSystem(new_seed, reset_config.terrain_size)
-            daycycle = DayCycle(day_length=300.0)
+            daycycle = DayCycle(day_length=day_length)
             metrics = MetricsTracker()
             replay = ReplayRecorder(record_interval=5)
             replay.start()

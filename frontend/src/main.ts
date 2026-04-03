@@ -8,6 +8,8 @@ import { FogOfWarRenderer } from "@/fog/fogOfWar";
 import { OverlayRenderer } from "@/entities/overlays";
 import { InteractionManager } from "@/ui/interaction";
 import { ChatPanel } from "@/ui/chatPanel";
+import { SettingsPanel } from "@/ui/settingsPanel";
+import type { SimSettings } from "@/ui/settingsPanel";
 
 // ============================================================================
 // Scene Setup
@@ -202,6 +204,14 @@ const client = new SwarmClient(
 
 const interaction = new InteractionManager(scene, camera, glRenderer, client);
 const chatPanel = new ChatPanel(client);
+const settingsPanel = new SettingsPanel((config: SimSettings) => {
+  // Send reset with config to backend
+  paused = false;
+  document.getElementById("btn-pause")!.textContent = "Pause";
+  client.sendSimControl("reset", undefined, config as unknown as Record<string, number>);
+  settingsPanel.toggle(); // Close panel after apply
+  console.log("[DroneSwarm] Reset with custom config:", config);
+});
 
 // Wire chat responses from server to the chat panel
 client.onChatResponse((msg) => chatPanel.handleResponse(msg));
@@ -279,8 +289,9 @@ document.getElementById("btn-reset")!.addEventListener("click", resetSim);
 
 // Keyboard shortcuts
 window.addEventListener("keydown", (e: KeyboardEvent) => {
-  // Don't handle shortcuts when chat is focused
-  if (chatPanel.isVisible() && document.activeElement?.tagName === "INPUT") {
+  // Don't handle shortcuts when chat or settings inputs are focused
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
     return;
   }
 

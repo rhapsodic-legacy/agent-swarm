@@ -49,11 +49,16 @@ export class SwarmClient {
     });
   }
 
-  sendSimControl(action: "pause" | "resume" | "set_speed" | "reset", value?: number): void {
+  sendSimControl(
+    action: "pause" | "resume" | "set_speed" | "reset",
+    value?: number,
+    config?: Record<string, number>,
+  ): void {
     this.send({
       type: "sim_control",
       action,
       value: value ?? null,
+      config: config ?? null,
     });
   }
 
