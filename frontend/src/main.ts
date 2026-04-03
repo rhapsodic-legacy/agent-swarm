@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { SwarmClient } from "@/network/client";
+import { decodeTerrain } from "@/network/types";
 import type { HazardInfo, StateUpdate } from "@/network/types";
 import { TerrainRenderer } from "@/scene/terrain";
 import { DroneRenderer } from "@/entities/drones";
@@ -241,17 +242,20 @@ const client = new SwarmClient(
   (state: StateUpdate) => {
     // Build/rebuild terrain when it arrives (initial load or after reset)
     if (state.terrain) {
-      terrainRenderer.buildFromData(state.terrain);
-      fogRenderer.initialize(state.terrain.width, state.terrain.height);
+      const decoded = decodeTerrain(state.terrain);
+      terrainRenderer.buildFromData(decoded);
+      fogRenderer.initialize(decoded.width, decoded.height);
 
       // Clear hazards so they are rebuilt with the new terrain
       clearHazardMeshes();
 
-      // Re-center camera on terrain
-      const cx = state.terrain.width / 2;
-      const cz = state.terrain.height / 2;
+      // Re-center camera on terrain (scale camera distance with terrain size)
+      const cx = decoded.width / 2;
+      const cz = decoded.height / 2;
+      const camDist = Math.max(decoded.width, decoded.height) * 0.6;
       controls.target.set(cx, 30, cz);
-      camera.position.set(cx + 100, 180, cz + 100);
+      camera.position.set(cx + camDist * 0.7, camDist * 0.8, cz + camDist * 0.7);
+      controls.maxDistance = camDist * 3;
 
       console.log("[DroneSwarm] Terrain built, visualization active");
     }

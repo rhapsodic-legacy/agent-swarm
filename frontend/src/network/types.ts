@@ -25,8 +25,60 @@ export interface TerrainData {
   width: number;
   height: number;
   max_elevation: number;
-  heightmap: number[][];
-  biome_map: number[][];
+  encoding?: string;
+  /** Base64-encoded uint16 heightmap (row-major, 0-65535 → 0-max_elevation) */
+  heightmap_b64?: string;
+  /** Base64-encoded uint8 biome map (row-major, values 0-5) */
+  biome_map_b64?: string;
+  /** Legacy JSON arrays (for backwards compat) */
+  heightmap?: number[][];
+  biome_map?: number[][];
+}
+
+/** Decoded terrain with 2D arrays ready for rendering. */
+export interface DecodedTerrain {
+  width: number;
+  height: number;
+  max_elevation: number;
+  heightmap: Float32Array;
+  biome_map: Uint8Array;
+}
+
+/** Decode terrain from either base64 binary or legacy JSON format. */
+export function decodeTerrain(data: TerrainData): DecodedTerrain {
+  const { width, height, max_elevation } = data;
+
+  let heightmap: Float32Array;
+  let biome_map: Uint8Array;
+
+  if (data.encoding === "base64_uint16_uint8" && data.heightmap_b64 && data.biome_map_b64) {
+    // Decode base64 binary
+    const hmBytes = Uint8Array.from(atob(data.heightmap_b64), (c) => c.charCodeAt(0));
+    const hmUint16 = new Uint16Array(hmBytes.buffer);
+    heightmap = new Float32Array(hmUint16.length);
+    for (let i = 0; i < hmUint16.length; i++) {
+      heightmap[i] = (hmUint16[i] / 65535) * max_elevation;
+    }
+
+    const bmBytes = Uint8Array.from(atob(data.biome_map_b64), (c) => c.charCodeAt(0));
+    biome_map = new Uint8Array(bmBytes.buffer);
+  } else if (data.heightmap && data.biome_map) {
+    // Legacy JSON arrays
+    heightmap = new Float32Array(width * height);
+    biome_map = new Uint8Array(width * height);
+    for (let row = 0; row < height; row++) {
+      for (let col = 0; col < width; col++) {
+        heightmap[row * width + col] = data.heightmap[row][col];
+        biome_map[row * width + col] = data.biome_map[row][col];
+      }
+    }
+  } else {
+    // Empty fallback
+    heightmap = new Float32Array(width * height);
+    biome_map = new Uint8Array(width * height);
+  }
+
+  return { width, height, max_elevation, heightmap, biome_map };
 }
 
 export interface FogData {

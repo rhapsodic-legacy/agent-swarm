@@ -30,9 +30,9 @@ interface Preset {
 }
 
 const PARAMETERS: ParameterDef[] = [
-  { key: "terrain_size", label: "Terrain Size", min: 64, max: 256, default: 128, step: 32 },
-  { key: "drone_count", label: "Drone Count", min: 4, max: 60, default: 20, step: 1 },
-  { key: "survivor_count", label: "Survivors", min: 3, max: 40, default: 15, step: 1 },
+  { key: "terrain_size", label: "Terrain Size", min: 64, max: 1024, default: 512, step: 64 },
+  { key: "drone_count", label: "Drone Count", min: 4, max: 100, default: 20, step: 1 },
+  { key: "survivor_count", label: "Survivors", min: 3, max: 80, default: 25, step: 1 },
   { key: "max_elevation", label: "Max Elevation", min: 50, max: 400, default: 200, step: 10 },
   { key: "drone_speed", label: "Drone Speed (m/s)", min: 5, max: 30, default: 15, step: 1 },
   { key: "sensor_range", label: "Sensor Range (m)", min: 15, max: 80, default: 40, step: 5 },
@@ -42,10 +42,10 @@ const PARAMETERS: ParameterDef[] = [
 ];
 
 const PRESETS: Preset[] = [
-  { name: "Small", values: { terrain_size: 64, drone_count: 8, survivor_count: 6 } },
-  { name: "Medium", values: { terrain_size: 128, drone_count: 20, survivor_count: 15 } },
-  { name: "Large", values: { terrain_size: 256, drone_count: 40, survivor_count: 30 } },
-  { name: "Stress", values: { terrain_size: 256, drone_count: 80, survivor_count: 50 } },
+  { name: "Small", values: { terrain_size: 128, drone_count: 10, survivor_count: 8 } },
+  { name: "Medium", values: { terrain_size: 512, drone_count: 20, survivor_count: 25 } },
+  { name: "Large", values: { terrain_size: 768, drone_count: 40, survivor_count: 40 } },
+  { name: "Massive", values: { terrain_size: 1024, drone_count: 60, survivor_count: 60 } },
 ];
 
 const STYLE_ID = "settings-panel-styles";

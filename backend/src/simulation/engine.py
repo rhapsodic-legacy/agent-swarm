@@ -131,7 +131,7 @@ def tick(
     for d in drones:
         if d.status == DroneStatus.FAILED:
             continue
-        detected_ids = detect_survivors(d, tuple(survivors))
+        detected_ids = detect_survivors(d, tuple(survivors), world.terrain.biome_map)
         for sid in detected_ids:
             survivors[sid] = replace(
                 survivors[sid],

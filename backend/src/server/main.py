@@ -53,7 +53,14 @@ app.add_middleware(
 clients: set[WebSocket] = set()
 new_clients: set[WebSocket] = set()  # clients that haven't received terrain yet
 pending_commands: list[Command] = []
-sim_config = SimConfig(terrain_size=128)
+sim_config = SimConfig(
+    terrain_size=512,
+    drone_count=20,
+    survivor_count=25,
+    drone_sensor_range=40.0,
+    drone_comms_range=120.0,
+    drone_battery_drain_rate=0.04,
+)
 sim_running = True
 sim_speed = 1.0  # multiplier
 sim_reset_requested = False
@@ -323,7 +330,13 @@ def main() -> None:
     import uvicorn
 
     logger.info("Starting Drone Swarm Server on port 8765")
-    uvicorn.run(app, host="0.0.0.0", port=8765, log_level="info")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8765,
+        log_level="info",
+        ws_max_size=16 * 1024 * 1024,  # 16MB for large terrain payloads
+    )
 
 
 if __name__ == "__main__":

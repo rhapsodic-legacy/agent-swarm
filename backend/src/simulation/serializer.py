@@ -99,13 +99,31 @@ def _serialize_event(event: SimEvent) -> dict:
 
 
 def _serialize_terrain(terrain: Terrain) -> dict:
-    """Serialize terrain data. Heightmap sent as nested list for JSON compat."""
+    """Serialize terrain data using base64-encoded binary for efficiency.
+
+    Heightmap: quantized to uint16 (0-65535 mapped to 0-max_elevation).
+    Biome map: uint8.
+    This reduces a 512x512 terrain from ~15MB JSON to ~700KB base64.
+    """
+    import base64
+
+    # Quantize heightmap to uint16 (0-65535 range)
+    hm = terrain.heightmap.astype(np.float32)
+    hm_normalized = hm / max(terrain.max_elevation, 1.0)  # 0-1
+    hm_uint16 = (hm_normalized * 65535).astype(np.uint16)
+    hm_b64 = base64.b64encode(hm_uint16.tobytes()).decode("ascii")
+
+    # Biome map as uint8
+    bm_uint8 = terrain.biome_map.astype(np.uint8)
+    bm_b64 = base64.b64encode(bm_uint8.tobytes()).decode("ascii")
+
     return {
         "width": terrain.width,
         "height": terrain.height,
         "max_elevation": terrain.max_elevation,
-        "heightmap": terrain.heightmap.tolist(),
-        "biome_map": terrain.biome_map.tolist(),
+        "heightmap_b64": hm_b64,
+        "biome_map_b64": bm_b64,
+        "encoding": "base64_uint16_uint8",
     }
 
 

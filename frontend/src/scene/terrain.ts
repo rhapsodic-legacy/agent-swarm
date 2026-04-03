@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { TerrainData } from "@/network/types";
+import type { DecodedTerrain } from "@/network/types";
 
 /**
  * Biome color palette. Each entry is an [r, g, b] tuple in 0–1 range.
@@ -64,7 +64,7 @@ export class TerrainRenderer {
    * Should be called once when the initial terrain payload arrives over WebSocket.
    * Calling again will dispose the previous meshes first.
    */
-  buildFromData(terrain: TerrainData): void {
+  buildFromData(terrain: DecodedTerrain): void {
     // Clean up any previous build
     this.dispose();
 
@@ -108,9 +108,10 @@ export class TerrainRenderer {
       const col = i % width;
       const row = Math.floor(i / width);
 
-      // Look up height and biome
-      const elevation = heightmap[row][col];
-      const biome = biome_map[row][col];
+      // Look up height and biome from flat typed arrays
+      const idx = row * width + col;
+      const elevation = heightmap[idx];
+      const biome = biome_map[idx];
 
       // Set position: (col, elevation, row)
       posAttr.setXYZ(i, col, elevation, row);

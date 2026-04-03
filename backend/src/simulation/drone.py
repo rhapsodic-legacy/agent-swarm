@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     import numpy as np
 
 from src.simulation.types import (
+    Biome,
     Drone,
     DroneStatus,
     SimConfig,
@@ -27,6 +28,17 @@ from src.simulation.types import (
 
 _ACCEL_RATE: float = 5.0  # m/s^2
 _DETECTION_GUARANTEED_RATIO: float = 0.8  # detect within 80 % of sensor range
+
+# Biome detection multipliers — how effectively drones can spot survivors in each biome.
+# Multiplied against the detection range. Lower = harder to spot.
+_BIOME_DETECTION: dict[int, float] = {
+    Biome.WATER.value: 0.0,  # no survivors in water
+    Biome.BEACH.value: 1.0,  # open sand, high visibility
+    Biome.FOREST.value: 0.35,  # canopy concealment, very hard
+    Biome.URBAN.value: 0.55,  # buildings block line-of-sight, moderate
+    Biome.MOUNTAIN.value: 0.65,  # rocky terrain, some concealment
+    Biome.SNOW.value: 0.95,  # high contrast, easy to spot
+}
 
 
 # ---------------------------------------------------------------------------
@@ -187,11 +199,21 @@ def check_drone_failures(
 # ---------------------------------------------------------------------------
 
 
-def detect_survivors(drone: Drone, survivors: tuple[Survivor, ...]) -> list[int]:
+def detect_survivors(
+    drone: Drone,
+    survivors: tuple[Survivor, ...],
+    biome_map: np.ndarray | None = None,
+) -> list[int]:
     """Return IDs of survivors newly detected by *drone* this tick.
 
-    Detection is deterministic: guaranteed within 80 % of sensor range,
-    impossible beyond that.
+    Detection range is modified by the biome the survivor is in:
+    - Forest: 35% of normal range (canopy concealment)
+    - Urban: 55% (buildings block line-of-sight)
+    - Mountain: 65% (rocky terrain)
+    - Snow: 95% (high contrast against white)
+    - Beach: 100% (open, high visibility)
+
+    Without a biome_map, falls back to the original flat detection model.
     """
     if not drone.sensor_active or drone.status is DroneStatus.FAILED:
         return []
@@ -202,10 +224,20 @@ def detect_survivors(drone: Drone, survivors: tuple[Survivor, ...]) -> list[int]
     for s in survivors:
         if s.discovered:
             continue
+
+        # Get biome modifier for the survivor's location
+        biome_mod = 1.0
+        if biome_map is not None:
+            s_row = int(min(max(s.position.z, 0), biome_map.shape[0] - 1))
+            s_col = int(min(max(s.position.x, 0), biome_map.shape[1] - 1))
+            biome_val = int(biome_map[s_row, s_col])
+            biome_mod = _BIOME_DETECTION.get(biome_val, 0.5)
+
+        effective_range = sr * biome_mod * _DETECTION_GUARANTEED_RATIO
         dx = drone.position.x - s.position.x
         dz = drone.position.z - s.position.z
         dist_xz = math.sqrt(dx * dx + dz * dz)
-        if dist_xz / sr < _DETECTION_GUARANTEED_RATIO:
+        if dist_xz < effective_range:
             detected.append(s.id)
 
     return detected
