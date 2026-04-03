@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "file=\"$CLAUDE_FILE_PATH\"; if [ -n \"$file\" ]; then case \"$file\" in *.py) cd /Users/jesseceresphoenix/Documents/agent_swarm/backend && .venv/bin/ruff format \"$file\" 2>/dev/null && .venv/bin/ruff check --fix \"$file\" 2>/dev/null;; *.ts|*.tsx) export PATH=\"$HOME/.local/bin:$PATH\" && eval \"$(fnm env)\" && cd /Users/jesseceresphoenix/Documents/agent_swarm/frontend && npx prettier --write \"$file\" 2>/dev/null;; esac; fi; true"
+          }
+        ]
+      }
+    ],
+    "PreCommit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd /Users/jesseceresphoenix/Documents/agent_swarm/backend && .venv/bin/ruff check src/ && .venv/bin/ruff format --check src/"
+          }
+        ]
+      }
+    ]
+  }
+}
