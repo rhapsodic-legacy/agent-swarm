@@ -154,6 +154,15 @@ class SwarmCoordinator:
 
             agent = self.agents[drone.id]
 
+            # Smart battery check — estimate if drone can return to base
+            if drone.status == DroneStatus.ACTIVE and self._should_return_for_fuel(drone, world):
+                agent.task = DroneTask.RETURNING_TO_BASE
+                agent.current_target = world.base_position
+                commands.append(
+                    Command(type="return_to_base", drone_id=drone.id, target=world.base_position)
+                )
+                continue
+
             # Check if LLM has a decision for this drone
             llm_decision = llm_decisions.get(drone.id)
             if llm_decision:
@@ -462,6 +471,27 @@ class SwarmCoordinator:
             # Clear the failed drone's zone
             failed_agent.zone = None
             failed_agent.task = DroneTask.IDLE
+
+    def _should_return_for_fuel(self, drone: Drone, world: WorldState) -> bool:
+        """Proactively return a drone if it won't have enough battery to get back.
+
+        Estimates flight time to base based on distance and speed, then adds a
+        safety margin. Returns True if the drone should head home now.
+        """
+        dist_to_base = (drone.position - world.base_position).length_xz()
+        if dist_to_base < 10.0:
+            return False  # already near base
+
+        # Estimate time to return: distance / speed (conservative)
+        speed = max(drone.max_speed * 0.6, 1.0)
+        time_to_base = dist_to_base / speed
+
+        # Estimate battery drain for the return trip
+        drain_rate = self.config.drone_battery_drain_rate * 3.0  # conservative multiplier
+        battery_needed = drain_rate * time_to_base
+
+        # Safety margin: 25% buffer so drones return well before critical
+        return drone.battery < (battery_needed + 25.0)
 
     def _get_coverage(self, fog_grid: np.ndarray) -> float:
         """Calculate exploration coverage percentage."""

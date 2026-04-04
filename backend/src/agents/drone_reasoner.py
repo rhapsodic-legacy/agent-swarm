@@ -8,6 +8,7 @@ Rate-limited to stay within Mistral's free tier.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 
@@ -65,8 +66,9 @@ class DroneReasoner:
         self.last_call_time = now
         self._last_llm_tick[drone.id] = world.tick
         context = self._build_context(drone, world)
-        task = asyncio.create_task(self._call_reasoner(drone.id, context, world.tick))
-        self.pending_tasks[drone.id] = task
+        with contextlib.suppress(RuntimeError):
+            task = asyncio.create_task(self._call_reasoner(drone.id, context, world.tick))
+            self.pending_tasks[drone.id] = task
 
     def consume_decisions(self) -> dict[int, dict]:
         """Collect all completed drone decisions. Non-blocking."""

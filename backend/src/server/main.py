@@ -59,7 +59,7 @@ sim_config = SimConfig(
     survivor_count=25,
     drone_sensor_range=40.0,
     drone_comms_range=120.0,
-    drone_battery_drain_rate=0.04,
+    drone_battery_drain_rate=0.12,
 )
 sim_running = True
 sim_speed = 1.0  # multiplier

@@ -7,6 +7,7 @@ Provides strategic directives that the SwarmCoordinator incorporates into its de
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 
 import numpy as np
@@ -83,7 +84,8 @@ class MissionPlanner:
         """Start an async planning call. Non-blocking."""
         self.last_call_tick = world.tick
         context = self._build_context(world)
-        self.pending_task = asyncio.create_task(self._call_planner(context, world.tick))
+        with contextlib.suppress(RuntimeError):
+            self.pending_task = asyncio.create_task(self._call_planner(context, world.tick))
 
     def consume_result(self) -> dict | None:
         """Check if a planning result is ready. Non-blocking."""
