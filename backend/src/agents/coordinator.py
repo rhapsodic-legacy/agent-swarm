@@ -15,6 +15,10 @@ from enum import Enum, auto
 
 import numpy as np
 
+from src.agents.biome_profiles import (
+    BiomeFlightProfile,
+    get_profile_at_position,
+)
 from src.agents.drone_reasoner import DroneReasoner
 from src.agents.mission_planner import MissionPlanner
 from src.agents.pathfinding import (
@@ -365,12 +369,14 @@ class SwarmCoordinator:
             return target
 
         # Generate new lawnmower waypoints for assigned zone
+        # Use biome-aware spacing: tighter in forest/urban, wider in open terrain
         if agent.zone is not None:
             zone_min, zone_max = agent.zone
+            profile = self._get_zone_profile(agent.zone, world)
             agent.waypoints = lawnmower_waypoints(
                 zone_min,
                 zone_max,
-                spacing=int(self.config.drone_sensor_range * 0.7),
+                spacing=int(profile.search_spacing),
                 terrain=world.terrain,
             )
             agent.waypoint_index = 0
@@ -392,19 +398,49 @@ class SwarmCoordinator:
         elev = float(terrain.heightmap[cr][cc])
         return Vec3(float(cc), elev, float(cr))
 
+    def _get_zone_profile(
+        self, zone: tuple[tuple[int, int], tuple[int, int]], world: WorldState
+    ) -> BiomeFlightProfile:
+        """Get the dominant biome flight profile for a zone."""
+        (r_min, c_min), (r_max, c_max) = zone
+        cr = min((r_min + r_max) // 2, world.terrain.height - 1)
+        cc = min((c_min + c_max) // 2, world.terrain.width - 1)
+        return get_profile_at_position(
+            float(cc),
+            float(cr),
+            world.terrain.biome_map,
+            world.terrain.width,
+            world.terrain.height,
+        )
+
+    def _get_drone_profile(self, drone: Drone, world: WorldState) -> BiomeFlightProfile:
+        """Get the biome flight profile at the drone's current position."""
+        return get_profile_at_position(
+            drone.position.x,
+            drone.position.z,
+            world.terrain.biome_map,
+            world.terrain.width,
+            world.terrain.height,
+        )
+
     def _apply_repulsion(self, drone: Drone, target: Vec3, world: WorldState) -> Vec3:
-        """Adjust a target by adding drone-repulsion to prevent clustering."""
+        """Adjust a target by adding drone-repulsion to prevent clustering.
+
+        Repulsion range adapts to biome — tighter in forest/urban (drones cluster),
+        wider in open terrain.
+        """
         other_positions = [
             d.position for d in world.drones if d.id != drone.id and d.status == DroneStatus.ACTIVE
         ]
         if not other_positions:
             return target
 
+        profile = self._get_drone_profile(drone, world)
         repulsion = potential_field_direction(
             drone.position,
             other_positions,
-            repulsion_range=25.0,
-            repulsion_strength=8.0,
+            repulsion_range=profile.repulsion_range,
+            repulsion_strength=6.0,
         )
 
         # Blend repulsion into target direction

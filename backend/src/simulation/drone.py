@@ -40,6 +40,17 @@ _BIOME_DETECTION: dict[int, float] = {
     Biome.SNOW.value: 0.95,  # high contrast, easy to spot
 }
 
+# Optimal altitudes per biome — flying at this altitude gives standard detection.
+# Flying lower improves it (bonus up to 1.5x), flying higher degrades it.
+_BIOME_OPTIMAL_ALT: dict[int, float] = {
+    Biome.WATER.value: 60.0,
+    Biome.BEACH.value: 60.0,  # open — standard high altitude is fine
+    Biome.FOREST.value: 20.0,  # must fly low to see through canopy
+    Biome.URBAN.value: 35.0,  # moderate — below rooftop level helps
+    Biome.MOUNTAIN.value: 40.0,
+    Biome.SNOW.value: 60.0,  # high is fine — high contrast
+}
+
 
 # ---------------------------------------------------------------------------
 # 1. Physics update
@@ -227,13 +238,28 @@ def detect_survivors(
 
         # Get biome modifier for the survivor's location
         biome_mod = 1.0
+        optimal_alt = 50.0  # default cruise altitude
         if biome_map is not None:
             s_row = int(min(max(s.position.z, 0), biome_map.shape[0] - 1))
             s_col = int(min(max(s.position.x, 0), biome_map.shape[1] - 1))
             biome_val = int(biome_map[s_row, s_col])
             biome_mod = _BIOME_DETECTION.get(biome_val, 0.5)
+            # Biome-specific optimal altitudes (lower = better in dense biomes)
+            optimal_alt = _BIOME_OPTIMAL_ALT.get(biome_val, 50.0)
 
-        effective_range = sr * biome_mod * _DETECTION_GUARANTEED_RATIO
+        # Altitude bonus: flying lower than optimal improves detection
+        drone_alt_above_terrain = max(drone.position.y - s.position.y, 1.0)
+        alt_ratio = drone_alt_above_terrain / max(optimal_alt, 1.0)
+        if alt_ratio <= 0.5:
+            alt_bonus = 1.5  # very low — excellent detection
+        elif alt_ratio <= 1.0:
+            alt_bonus = 1.0 + 0.5 * (1.0 - alt_ratio)
+        elif alt_ratio <= 2.0:
+            alt_bonus = 1.0 - 0.4 * (alt_ratio - 1.0)
+        else:
+            alt_bonus = 0.6  # too high
+
+        effective_range = sr * biome_mod * alt_bonus * _DETECTION_GUARANTEED_RATIO
         dx = drone.position.x - s.position.x
         dz = drone.position.z - s.position.z
         dist_xz = math.sqrt(dx * dx + dz * dz)
