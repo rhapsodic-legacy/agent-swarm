@@ -201,3 +201,17 @@ class SimConfig:
     fog_stale_ticks: int = 200  # ticks before explored cell becomes stale
     # Flight altitude
     drone_cruise_altitude: float = 50.0  # meters above terrain
+
+
+@dataclass(frozen=True)
+class ChunkedWorldConfig:
+    """Configuration for the chunked world system.
+
+    Defines the overall world dimensions, chunk granularity, seed, and survivor
+    density.  Used alongside ``SimConfig`` (which holds drone / physics params).
+    """
+
+    world_size: int = 4096  # total world size in meters (square)
+    chunk_size: int = 256  # size of each chunk in meters
+    seed: int = 42
+    survivor_density: float = 0.00015  # survivors per m² (~10 per chunk in urban)
