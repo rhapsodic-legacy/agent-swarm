@@ -7,6 +7,7 @@ a snapshot and returns a new snapshot --- no mutation.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -21,6 +22,10 @@ from src.simulation.types import (
     Survivor,
     Vec3,
 )
+
+# Type alias for terrain lookup callables
+HeightFn = Callable[[float, float], float]
+BiomeFn = Callable[[float, float], int]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -60,8 +65,11 @@ _BIOME_OPTIMAL_ALT: dict[int, float] = {
 def update_drone_physics(
     drone: Drone,
     dt: float,
-    terrain_heightmap: np.ndarray,
+    terrain_heightmap: np.ndarray | None,
     config: SimConfig,
+    *,
+    height_fn: HeightFn | None = None,
+    world_bounds: tuple[int, int] | None = None,
 ) -> Drone:
     """Advance drone position/velocity by *dt* seconds.
 
@@ -69,11 +77,28 @@ def update_drone_physics(
     * Maintains cruise altitude above the terrain surface.
     * Clamps position to terrain bounds.
     * Failed drones do not move.
+
+    If *height_fn* and *world_bounds* are provided, uses them instead of
+    *terrain_heightmap* for height lookups (chunked world support).
     """
     if drone.status is DroneStatus.FAILED:
         return replace(drone, velocity=Vec3(0.0, 0.0, 0.0))
 
-    terrain_h, terrain_w = terrain_heightmap.shape
+    # Determine terrain size and height lookup
+    if height_fn is not None and world_bounds is not None:
+        terrain_w, terrain_h = world_bounds
+        def _get_height(x: float, z: float) -> float:
+            return height_fn(
+                min(max(x, 0.0), terrain_w - 1),
+                min(max(z, 0.0), terrain_h - 1),
+            )
+    else:
+        assert terrain_heightmap is not None
+        terrain_h, terrain_w = terrain_heightmap.shape
+        def _get_height(x: float, z: float) -> float:
+            ix = int(min(max(x, 0.0), terrain_w - 1))
+            iz = int(min(max(z, 0.0), terrain_h - 1))
+            return float(terrain_heightmap[iz, ix])  # type: ignore[index]
 
     # --- desired velocity --------------------------------------------------
     if drone.target is not None:
@@ -102,10 +127,7 @@ def update_drone_physics(
     new_vz = drone.velocity.z + dv.z
 
     # --- altitude: cruise altitude above terrain ---------------------------
-    # Sample terrain elevation at current XZ (clamp indices to valid range)
-    ix = int(min(max(drone.position.x, 0.0), terrain_w - 1))
-    iz = int(min(max(drone.position.z, 0.0), terrain_h - 1))
-    terrain_elev = float(terrain_heightmap[iz, ix])
+    terrain_elev = _get_height(drone.position.x, drone.position.z)
     target_alt = terrain_elev + config.drone_cruise_altitude
 
     alt_diff = target_alt - drone.position.y
@@ -125,9 +147,7 @@ def update_drone_physics(
     clamped_x = min(max(new_pos.x, 0.0), float(terrain_w - 1))
     clamped_z = min(max(new_pos.z, 0.0), float(terrain_h - 1))
     # Don't let altitude go below terrain surface
-    ix2 = int(min(max(clamped_x, 0.0), terrain_w - 1))
-    iz2 = int(min(max(clamped_z, 0.0), terrain_h - 1))
-    floor_elev = float(terrain_heightmap[iz2, ix2])
+    floor_elev = _get_height(clamped_x, clamped_z)
     clamped_y = max(new_pos.y, floor_elev)
     new_pos = Vec3(clamped_x, clamped_y, clamped_z)
 
@@ -214,20 +234,29 @@ def detect_survivors(
     drone: Drone,
     survivors: tuple[Survivor, ...],
     biome_map: np.ndarray | None = None,
+    *,
+    biome_fn: BiomeFn | None = None,
+    height_fn: HeightFn | None = None,
+    config: SimConfig | None = None,
 ) -> list[int]:
     """Return IDs of survivors newly detected by *drone* this tick.
 
-    Detection range is modified by the biome the survivor is in:
-    - Forest: 35% of normal range (canopy concealment)
-    - Urban: 55% (buildings block line-of-sight)
-    - Mountain: 65% (rocky terrain)
-    - Snow: 95% (high contrast against white)
-    - Beach: 100% (open, high visibility)
+    Detection is a multi-factor model:
+    1. **Biome occlusion** — forest canopy, buildings, etc. reduce effective range.
+    2. **Altitude** — flying lower improves detection in dense biomes.
+    3. **Weather** — rain/fog reduces visibility globally.
+    4. **Night penalty** — detection degrades at night.
+    5. **Terrain LOS** — hills between drone and survivor block detection.
+    6. **Transponders** — some survivors have beacons (always detected in range).
 
-    Without a biome_map, falls back to the original flat detection model.
+    Accepts either a numpy *biome_map* or a *biome_fn(x, z)* callable for
+    chunked world support. Without either, falls back to flat detection.
     """
     if not drone.sensor_active or drone.status is DroneStatus.FAILED:
         return []
+
+    if config is None:
+        config = SimConfig()
 
     detected: list[int] = []
     sr = drone.sensor_range
@@ -236,33 +265,74 @@ def detect_survivors(
         if s.discovered:
             continue
 
-        # Get biome modifier for the survivor's location
+        dx = drone.position.x - s.position.x
+        dz = drone.position.z - s.position.z
+        dist_xz = math.sqrt(dx * dx + dz * dz)
+
+        # --- Transponder check: always detect if survivor has a beacon ---
+        # Deterministic "has transponder" from survivor ID
+        has_transponder = (s.id % 1000) < int(config.transponder_ratio * 1000)
+        if has_transponder and dist_xz < config.transponder_range:
+            detected.append(s.id)
+            continue
+
+        # --- Biome modifier ---
         biome_mod = 1.0
-        optimal_alt = 50.0  # default cruise altitude
-        if biome_map is not None:
+        optimal_alt = 50.0
+        biome_val = Biome.BEACH.value  # default: open
+        if biome_fn is not None:
+            biome_val = biome_fn(s.position.x, s.position.z)
+            biome_mod = _BIOME_DETECTION.get(biome_val, 0.5)
+            optimal_alt = _BIOME_OPTIMAL_ALT.get(biome_val, 50.0)
+        elif biome_map is not None:
             s_row = int(min(max(s.position.z, 0), biome_map.shape[0] - 1))
             s_col = int(min(max(s.position.x, 0), biome_map.shape[1] - 1))
             biome_val = int(biome_map[s_row, s_col])
             biome_mod = _BIOME_DETECTION.get(biome_val, 0.5)
-            # Biome-specific optimal altitudes (lower = better in dense biomes)
             optimal_alt = _BIOME_OPTIMAL_ALT.get(biome_val, 50.0)
 
-        # Altitude bonus: flying lower than optimal improves detection
+        # --- Enhanced occlusion from config ---
+        if biome_val == Biome.FOREST.value:
+            biome_mod *= (1.0 - config.canopy_occlusion)
+        elif biome_val == Biome.URBAN.value:
+            biome_mod *= (1.0 - config.urban_occlusion)
+
+        # --- Altitude bonus ---
         drone_alt_above_terrain = max(drone.position.y - s.position.y, 1.0)
         alt_ratio = drone_alt_above_terrain / max(optimal_alt, 1.0)
         if alt_ratio <= 0.5:
-            alt_bonus = 1.5  # very low — excellent detection
+            alt_bonus = 1.5
         elif alt_ratio <= 1.0:
             alt_bonus = 1.0 + 0.5 * (1.0 - alt_ratio)
         elif alt_ratio <= 2.0:
             alt_bonus = 1.0 - 0.4 * (alt_ratio - 1.0)
         else:
-            alt_bonus = 0.6  # too high
+            alt_bonus = 0.6
 
-        effective_range = sr * biome_mod * alt_bonus * _DETECTION_GUARANTEED_RATIO
-        dx = drone.position.x - s.position.x
-        dz = drone.position.z - s.position.z
-        dist_xz = math.sqrt(dx * dx + dz * dz)
+        # --- Weather visibility ---
+        weather_mod = config.weather_visibility
+
+        # --- Terrain line-of-sight check ---
+        los_ok = True
+        if config.detection_requires_los and height_fn is not None and dist_xz > 10.0:
+            # Sample terrain height at midpoint between drone and survivor
+            mid_x = (drone.position.x + s.position.x) / 2.0
+            mid_z = (drone.position.z + s.position.z) / 2.0
+            mid_terrain_h = height_fn(mid_x, mid_z)
+            # Interpolate expected altitude at midpoint
+            drone_h = drone.position.y
+            survivor_h = s.position.y
+            expected_h = (drone_h + survivor_h) / 2.0
+            if mid_terrain_h > expected_h:
+                los_ok = False  # terrain blocks line of sight
+
+        if not los_ok:
+            continue
+
+        # --- Final effective range ---
+        effective_range = (
+            sr * biome_mod * alt_bonus * weather_mod * _DETECTION_GUARANTEED_RATIO
+        )
         if dist_xz < effective_range:
             detected.append(s.id)
 

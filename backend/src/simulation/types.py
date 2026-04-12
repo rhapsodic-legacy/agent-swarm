@@ -201,6 +201,14 @@ class SimConfig:
     fog_stale_ticks: int = 200  # ticks before explored cell becomes stale
     # Flight altitude
     drone_cruise_altitude: float = 50.0  # meters above terrain
+    # Detection realism — occlusion and visibility toggles
+    detection_requires_los: bool = True  # terrain line-of-sight check
+    canopy_occlusion: float = 0.7  # 0-1, how much forest canopy blocks detection
+    urban_occlusion: float = 0.5  # 0-1, how much buildings block detection
+    weather_visibility: float = 1.0  # 0-1, 1.0=clear, 0.3=heavy fog/rain
+    night_penalty: float = 0.4  # detection multiplier at night (0-1)
+    transponder_range: float = 200.0  # range at which transponder-equipped survivors are always detected
+    transponder_ratio: float = 0.0  # fraction of survivors with transponders (0 = none)
 
 
 @dataclass(frozen=True)
@@ -211,7 +219,7 @@ class ChunkedWorldConfig:
     density.  Used alongside ``SimConfig`` (which holds drone / physics params).
     """
 
-    world_size: int = 4096  # total world size in meters (square)
-    chunk_size: int = 256  # size of each chunk in meters
+    world_size: int = 10240  # total world size in meters (10km x 10km)
+    chunk_size: int = 1024  # size of each chunk in meters (1km x 1km)
     seed: int = 42
-    survivor_density: float = 0.00015  # survivors per m² (~10 per chunk in urban)
+    survivor_density: float = 0.00008  # survivors per m² (~80 per chunk)

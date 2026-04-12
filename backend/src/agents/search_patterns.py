@@ -69,46 +69,44 @@ def _clamp(value: int, lo: int, hi: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def frontier_search(position: Vec3, fog_grid: np.ndarray, terrain: Terrain) -> Vec3 | None:
-    """Find the nearest frontier cell and return its world position.
+def frontier_search(
+    position: Vec3,
+    fog_grid: np.ndarray,
+    terrain: Terrain,
+    survivor_positions: list[Vec3] | None = None,
+) -> Vec3 | None:
+    """Find the best frontier cell, biased toward survivor clusters.
 
     A *frontier* cell is an explored/stale cell (value 1 or 2) that has at
     least one unexplored (value 0) 4-connected neighbour.
 
-    Among the 10 closest frontiers (by XZ distance to *position*), the one
-    adjacent to the largest unexplored region (estimated via a 5×5 window
-    count of unexplored cells) is selected.
+    Candidates are scored by: ``unexplored_density * survivor_proximity_boost``
+    among the top-20 closest frontiers.  This means frontiers near previous
+    survivor discoveries are strongly preferred.
 
     Returns ``None`` when no frontier exists (i.e. the map is fully explored).
     """
     height, width = fog_grid.shape
 
     # --- Identify explored cells (value 1 or 2) ---
-    explored_mask = fog_grid > 0  # bool, True where explored/stale
+    explored_mask = fog_grid > 0
 
     # --- Build a mask of cells that have at least one unexplored neighbour ---
-    # Shift the explored_mask in four directions; a cell is a frontier if it
-    # is explored AND at least one shifted version shows an unexplored cell.
     unexplored = fog_grid == 0
 
     has_unexplored_neighbor = np.zeros_like(explored_mask)
-    # North neighbour unexplored
     has_unexplored_neighbor[:-1, :] |= unexplored[1:, :]
-    # South neighbour unexplored
     has_unexplored_neighbor[1:, :] |= unexplored[:-1, :]
-    # West neighbour unexplored
     has_unexplored_neighbor[:, :-1] |= unexplored[:, 1:]
-    # East neighbour unexplored
     has_unexplored_neighbor[:, 1:] |= unexplored[:, :-1]
 
     frontier_mask = explored_mask & has_unexplored_neighbor
-    frontier_coords = np.argwhere(frontier_mask)  # shape (N, 2), each row = [row, col]
+    frontier_coords = np.argwhere(frontier_mask)
 
     if frontier_coords.shape[0] == 0:
         return None
 
     # --- Compute XZ distances from drone position to each frontier cell ---
-    # World position: Vec3(col, y, row) → drone col = position.x, drone row = position.z
     drone_col = position.x
     drone_row = position.z
     dists = np.hypot(
@@ -116,34 +114,34 @@ def frontier_search(position: Vec3, fog_grid: np.ndarray, terrain: Terrain) -> V
         frontier_coords[:, 0].astype(np.float64) - drone_row,
     )
 
-    # --- Pick top-10 closest frontiers ---
-    k = min(10, frontier_coords.shape[0])
+    # --- Pick top-20 closest frontiers (increased from 10 for better survivor matching) ---
+    k = min(20, frontier_coords.shape[0])
     top_indices = np.argpartition(dists, k - 1)[:k]
     candidates = frontier_coords[top_indices]
 
-    # --- Score each candidate by unexplored density in a 5×5 window ---
-    # Use a 2-D uniform filter via cumulative sum for speed.
-    # Precompute an integral image of the unexplored mask.
+    # --- Score by unexplored density in 5×5 window ---
     unexplored_f = unexplored.astype(np.float64)
-    # Pad with one extra row/col of zeros so we can index freely.
     padded = np.zeros((height + 1, width + 1), dtype=np.float64)
     padded[1:, 1:] = unexplored_f
     integral = padded.cumsum(axis=0).cumsum(axis=1)
 
+    # --- Compute survivor proximity boost for candidates ---
+    surv_boost = _survivor_proximity_boost(candidates, survivor_positions)
+
     best_score = -1.0
     best_row, best_col = int(candidates[0, 0]), int(candidates[0, 1])
 
-    half = 2  # 5×5 → half-window = 2
+    half = 2  # 5×5 window
     for idx in range(candidates.shape[0]):
         r, c = int(candidates[idx, 0]), int(candidates[idx, 1])
         r0 = max(r - half, 0)
         c0 = max(c - half, 0)
         r1 = min(r + half + 1, height)
         c1 = min(c + half + 1, width)
-        # Sum over [r0:r1, c0:c1] via integral image (shifted by +1 due to padding).
         window_sum = integral[r1, c1] - integral[r0, c1] - integral[r1, c0] + integral[r0, c0]
-        if window_sum > best_score:
-            best_score = window_sum
+        score = window_sum * surv_boost[idx]
+        if score > best_score:
+            best_score = score
             best_row, best_col = r, c
 
     heightmap: np.ndarray = terrain.heightmap  # type: ignore[assignment]
@@ -213,13 +211,17 @@ def priority_search(
     position: Vec3,
     fog_grid: np.ndarray,
     terrain: Terrain,
+    survivor_positions: list[Vec3] | None = None,
 ) -> Vec3 | None:
     """Return the highest-priority unexplored cell as a world position.
 
-    Priority is computed as ``biome_weight * accessibility`` where:
+    Priority is computed as ``biome_weight * accessibility * survivor_boost``
+    where:
 
     - biome_weight is determined by the cell's biome (URBAN=5, FOREST=3, …).
     - accessibility is ``1 / (1 + distance_to_drone / 100)``.
+    - survivor_boost rewards cells near previous survivor discoveries, since
+      survivors tend to cluster (avalanches, plane crashes, hiking groups).
 
     Returns ``None`` when no unexplored cell has a positive score.
     """
@@ -256,7 +258,10 @@ def priority_search(
     )
     accessibility = 1.0 / (1.0 + dists / 100.0)
 
-    scores = weights * accessibility
+    # --- Survivor proximity boost ---
+    survivor_boost = _survivor_proximity_boost(unexplored_coords, survivor_positions)
+
+    scores = weights * accessibility * survivor_boost
 
     best_idx = int(np.argmax(scores))
     if scores[best_idx] <= 0.0:
@@ -268,6 +273,45 @@ def priority_search(
     heightmap: np.ndarray = terrain.heightmap  # type: ignore[assignment]
     y = float(heightmap[best_row, best_col])
     return Vec3(float(best_col), y, float(best_row))
+
+
+def _survivor_proximity_boost(
+    cell_coords: np.ndarray,
+    survivor_positions: list[Vec3] | None,
+    radius: float = 500.0,
+    max_boost: float = 5.0,
+) -> np.ndarray:
+    """Compute a multiplicative boost for cells near known survivor locations.
+
+    Survivors tend to cluster (plane crash, avalanche, hiking group), so
+    unexplored areas near previous finds should be searched first.
+
+    Each survivor contributes a gaussian-like boost that peaks at the survivor
+    location and decays to 1.0 at ``radius`` meters.  Multiple nearby survivors
+    stack (additive), reflecting higher confidence in the area.
+
+    Returns an array of shape (N,) with values >= 1.0.
+    """
+    n = cell_coords.shape[0]
+    if not survivor_positions:
+        return np.ones(n, dtype=np.float64)
+
+    boost = np.ones(n, dtype=np.float64)
+    # survivor world coords: Vec3(col, y, row) → grid (row, col) = (z, x)
+    for surv in survivor_positions:
+        surv_col = surv.x
+        surv_row = surv.z
+        dists = np.hypot(
+            cell_coords[:, 1].astype(np.float64) - surv_col,
+            cell_coords[:, 0].astype(np.float64) - surv_row,
+        )
+        # Gaussian-like falloff: peak = max_boost at distance 0, ~1.0 at radius
+        # sigma chosen so exp(-(radius/sigma)^2) ≈ 0 → sigma = radius / 3
+        sigma = radius / 3.0
+        contribution = max_boost * np.exp(-(dists ** 2) / (2.0 * sigma ** 2))
+        boost += contribution
+
+    return boost
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,12 @@ export interface SimSettings {
   comms_range: number;
   battery_drain: number;
   day_length: number;
+  // Detection realism
+  canopy_occlusion: number;
+  urban_occlusion: number;
+  weather_visibility: number;
+  night_penalty: number;
+  transponder_ratio: number;
 }
 
 interface ParameterDef {
@@ -39,6 +45,12 @@ const PARAMETERS: ParameterDef[] = [
   { key: "comms_range", label: "Comms Range (m)", min: 40, max: 200, default: 100, step: 10 },
   { key: "battery_drain", label: "Battery Drain (%/s)", min: 0.01, max: 0.2, default: 0.05, step: 0.01 },
   { key: "day_length", label: "Day Length (s)", min: 60, max: 600, default: 300, step: 30 },
+  // Detection realism
+  { key: "canopy_occlusion", label: "Canopy Occlusion", min: 0, max: 1, default: 0.7, step: 0.05 },
+  { key: "urban_occlusion", label: "Urban Occlusion", min: 0, max: 1, default: 0.5, step: 0.05 },
+  { key: "weather_visibility", label: "Weather Visibility", min: 0.1, max: 1, default: 1.0, step: 0.05 },
+  { key: "night_penalty", label: "Night Penalty", min: 0, max: 1, default: 0.4, step: 0.05 },
+  { key: "transponder_ratio", label: "Transponder %", min: 0, max: 0.5, default: 0.15, step: 0.05 },
 ];
 
 const PRESETS: Preset[] = [
@@ -466,7 +478,8 @@ export class SettingsPanel {
   }
 
   private formatValue(key: keyof SimSettings, value: number): string {
-    if (key === "battery_drain") {
+    if (key === "battery_drain" || key === "canopy_occlusion" || key === "urban_occlusion" ||
+        key === "weather_visibility" || key === "night_penalty" || key === "transponder_ratio") {
       return value.toFixed(2);
     }
     return String(value);

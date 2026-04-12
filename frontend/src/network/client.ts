@@ -1,13 +1,16 @@
 /**
  * WebSocket client for connecting to the drone swarm backend.
  * Auto-reconnects with exponential backoff.
+ * Supports both monolithic terrain and chunked world messages.
  */
 
-import type { StateUpdate, TerrainData } from "./types";
+import type { StateUpdate, TerrainData, ChunkTerrainData, WorldOverview } from "./types";
 
 export type StateCallback = (state: StateUpdate) => void;
 export type ConnectionCallback = (connected: boolean) => void;
 export type ChatCallback = (message: string) => void;
+export type ChunkCallback = (chunk: ChunkTerrainData) => void;
+export type OverviewCallback = (overview: WorldOverview) => void;
 
 export class SwarmClient {
   private ws: WebSocket | null = null;
@@ -17,6 +20,8 @@ export class SwarmClient {
   private onState: StateCallback;
   private onConnection: ConnectionCallback;
   private onChat: ChatCallback | null = null;
+  private onChunk: ChunkCallback | null = null;
+  private onOverview: OverviewCallback | null = null;
   private terrain: TerrainData | null = null;
   private latestState: StateUpdate | null = null;
   private shouldReconnect = true;
@@ -73,6 +78,14 @@ export class SwarmClient {
     this.onChat = callback;
   }
 
+  onChunkTerrain(callback: ChunkCallback): void {
+    this.onChunk = callback;
+  }
+
+  onWorldOverview(callback: OverviewCallback): void {
+    this.onOverview = callback;
+  }
+
   getTerrain(): TerrainData | null {
     return this.terrain;
   }
@@ -113,6 +126,22 @@ export class SwarmClient {
           }
           this.latestState = msg;
           this.onState(msg);
+        } else if (msgType === "chunk_terrain") {
+          if (this.onChunk) {
+            const chunk = raw as unknown as import("./types").ChunkTerrainData;
+            console.log(
+              `[SwarmClient] Chunk received: (${chunk.cx},${chunk.cz}) at (${chunk.origin_x},${chunk.origin_z})`,
+            );
+            this.onChunk(chunk);
+          }
+        } else if (msgType === "world_overview") {
+          if (this.onOverview) {
+            const overview = raw as unknown as import("./types").WorldOverview;
+            console.log(
+              `[SwarmClient] World overview: ${overview.world_size}m, ${overview.chunks_x}x${overview.chunks_z} chunks`,
+            );
+            this.onOverview(overview);
+          }
         } else if (msgType === "chat_response") {
           const chatMsg = raw.message as string | undefined;
           if (chatMsg && this.onChat) {

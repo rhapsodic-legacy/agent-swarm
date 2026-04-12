@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import type { DecodedTerrain } from "@/network/types";
+import type { DecodedTerrain, ChunkTerrainData } from "@/network/types";
 
 /**
  * Biome color palette. Each entry is an [r, g, b] tuple in 0–1 range.
@@ -17,37 +17,42 @@ const BIOME_COLORS: [number, number, number][] = [
 /** Water level as a fraction of max_elevation. */
 const WATER_LEVEL_FRACTION = 0.15;
 
+/** Fallback downsample factor when backend sends full-res data (legacy). */
+const CHUNK_DOWNSAMPLE_FALLBACK = 4;
+
 /**
  * Simple deterministic pseudo-random number generator seeded by vertex index.
- * Returns a value in [-1, 1].
  */
 function seededRandom(seed: number): number {
-  // Fast integer hash (based on a common bit-mixing approach)
   let h = (seed * 2654435761) >>> 0;
   h = ((h ^ (h >>> 16)) * 0x45d9f3b) >>> 0;
   h = (h ^ (h >>> 16)) >>> 0;
   return (h / 0xffffffff) * 2 - 1;
 }
 
-/**
- * Apply ±5% deterministic variation to a color channel.
- * The result is clamped to [0, 1].
- */
 function varyChannel(base: number, vertexIndex: number, channelOffset: number): number {
   const noise = seededRandom(vertexIndex * 3 + channelOffset) * 0.05;
   return Math.min(1, Math.max(0, base * (1 + noise)));
 }
 
+/** Data for a single loaded chunk mesh. */
+interface ChunkMesh {
+  terrainMesh: THREE.Mesh;
+  waterMesh: THREE.Mesh;
+  geometry: THREE.BufferGeometry;
+  material: THREE.MeshStandardMaterial;
+  waterGeometry: THREE.PlaneGeometry;
+  waterMaterial: THREE.MeshStandardMaterial;
+}
+
 /**
- * Renders terrain as a displaced plane with vertex colors, plus a transparent
- * water plane. Designed for a drone swarm search-and-rescue simulation.
- *
- * Grid mapping: `grid[row][col]` -> world position `(col, heightmap[row][col], row)`.
- * The terrain occupies x=[0..width], z=[0..height].
+ * Renders terrain as displaced planes with vertex colors.
+ * Supports both monolithic terrain (legacy) and chunked world (new).
  */
 export class TerrainRenderer {
   private readonly scene: THREE.Scene;
 
+  // Legacy monolithic mesh (used when monolithic terrain arrives)
   private terrainMesh: THREE.Mesh | null = null;
   private waterMesh: THREE.Mesh | null = null;
   private terrainGeometry: THREE.BufferGeometry | null = null;
@@ -55,68 +60,37 @@ export class TerrainRenderer {
   private waterGeometry: THREE.PlaneGeometry | null = null;
   private waterMaterial: THREE.MeshStandardMaterial | null = null;
 
+  // Chunked meshes — keyed by "cx,cz"
+  private chunks: Map<string, ChunkMesh> = new Map();
+
   constructor(scene: THREE.Scene) {
     this.scene = scene;
   }
 
   /**
-   * Build and add the terrain + water meshes from the provided data.
-   * Should be called once when the initial terrain payload arrives over WebSocket.
-   * Calling again will dispose the previous meshes first.
+   * Build monolithic terrain mesh (legacy path).
    */
   buildFromData(terrain: DecodedTerrain): void {
-    // Clean up any previous build
     this.dispose();
 
     const { width, height, max_elevation, heightmap, biome_map } = terrain;
 
-    // ---- Terrain mesh ---------------------------------------------------
-
-    // PlaneGeometry creates a mesh in the XY plane. We rotate it to XZ later.
-    // Segments = grid cells - 1, so vertex count = width * height.
     const geometry = new THREE.PlaneGeometry(width, height, width - 1, height - 1);
-
-    // Rotate from XY to XZ (face up). Rotation is -90 degrees around X.
     geometry.rotateX(-Math.PI / 2);
 
     const posAttr = geometry.getAttribute("position");
     const vertexCount = posAttr.count;
-
-    // Prepare vertex color buffer
     const colors = new Float32Array(vertexCount * 3);
 
-    // PlaneGeometry after -90° X rotation produces vertices ordered row-major,
-    // top-to-bottom (decreasing Z) then left-to-right (increasing X).
-    // The default plane is centered at origin with the given width/height.
-    // We need to shift it so that grid[0][0] maps to world (0, elev, 0).
-    //
-    // Default vertex layout after rotation:
-    //   x in [-width/2 .. +width/2]
-    //   z in [-height/2 .. +height/2]   (but row 0 is at z = +height/2, descending)
-    //
-    // We want:
-    //   grid[row][col] -> (col, elevation, row)
-    //   col in [0 .. width-1]  mapped from width vertices across X
-    //   row in [0 .. height-1] mapped from height vertices across Z
-    //
-    // Strategy: iterate vertices, compute their grid row/col from the default
-    // layout, then overwrite positions directly.
-
     for (let i = 0; i < vertexCount; i++) {
-      // PlaneGeometry is (width) segments across X, (height) segments across Z (after rotation).
-      // Vertices are laid out row-by-row: row index along Z, column index along X.
       const col = i % width;
       const row = Math.floor(i / width);
-
-      // Look up height and biome from flat typed arrays
       const idx = row * width + col;
       const elevation = heightmap[idx];
       const biome = biome_map[idx];
 
-      // Set position: (col, elevation, row)
       posAttr.setXYZ(i, col, elevation, row);
 
-      // Vertex color from biome with deterministic noise
       const biomeIndex = Math.min(biome, BIOME_COLORS.length - 1);
       const [br, bg, bb] = BIOME_COLORS[biomeIndex];
       colors[i * 3] = varyChannel(br, i, 0);
@@ -125,7 +99,6 @@ export class TerrainRenderer {
     }
 
     posAttr.needsUpdate = true;
-
     geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     geometry.computeVertexNormals();
 
@@ -144,10 +117,8 @@ export class TerrainRenderer {
     this.terrainMesh = mesh;
     this.scene.add(mesh);
 
-    // ---- Water plane ----------------------------------------------------
-
+    // Water plane
     const waterLevel = max_elevation * WATER_LEVEL_FRACTION;
-
     const waterGeo = new THREE.PlaneGeometry(width, height);
     waterGeo.rotateX(-Math.PI / 2);
 
@@ -170,9 +141,137 @@ export class TerrainRenderer {
   }
 
   /**
+   * Build a chunk mesh from chunk terrain data (chunked world path).
+   * Downsamples 1024x1024 to 256x256 for rendering performance.
+   */
+  buildChunk(chunk: ChunkTerrainData): void {
+    const key = `${chunk.cx},${chunk.cz}`;
+
+    // Dispose existing chunk mesh if reloading
+    const existing = this.chunks.get(key);
+    if (existing) {
+      this.disposeChunkMesh(existing);
+      this.chunks.delete(key);
+    }
+
+    // Decode base64 terrain data
+    const hmBytes = Uint8Array.from(atob(chunk.heightmap_b64), (c) => c.charCodeAt(0));
+    const hmUint16 = new Uint16Array(hmBytes.buffer);
+    const bmBytes = Uint8Array.from(atob(chunk.biome_map_b64), (c) => c.charCodeAt(0));
+
+    const fullSize = chunk.size;
+    // Backend may send pre-downsampled data with a resolution field
+    const dataRes = chunk.resolution ?? fullSize;
+    // If data is still full-res (legacy), downsample client-side
+    const renderSize = dataRes < fullSize ? dataRes : Math.floor(fullSize / CHUNK_DOWNSAMPLE_FALLBACK);
+    const ds = dataRes < fullSize ? 1 : CHUNK_DOWNSAMPLE_FALLBACK;
+    const cellSize = fullSize / renderSize; // meters per render cell
+
+    // Create geometry
+    const geometry = new THREE.PlaneGeometry(fullSize, fullSize, renderSize - 1, renderSize - 1);
+    geometry.rotateX(-Math.PI / 2);
+
+    const posAttr = geometry.getAttribute("position");
+    const vertexCount = posAttr.count;
+    const colors = new Float32Array(vertexCount * 3);
+
+    for (let i = 0; i < vertexCount; i++) {
+      const col = i % renderSize;
+      const row = Math.floor(i / renderSize);
+
+      // Map render grid to data grid
+      const srcCol = Math.min(col * ds, dataRes - 1);
+      const srcRow = Math.min(row * ds, dataRes - 1);
+      const srcIdx = srcRow * dataRes + srcCol;
+
+      const elevation = (hmUint16[srcIdx] / 65535) * chunk.max_elevation;
+      const biome = bmBytes[srcIdx];
+
+      // Position relative to chunk origin
+      const worldX = col * cellSize;
+      const worldZ = row * cellSize;
+      posAttr.setXYZ(i, worldX, elevation, worldZ);
+
+      const biomeIndex = Math.min(biome, BIOME_COLORS.length - 1);
+      const [br, bg, bb] = BIOME_COLORS[biomeIndex];
+      colors[i * 3] = varyChannel(br, i + chunk.cx * 10000 + chunk.cz * 100, 0);
+      colors[i * 3 + 1] = varyChannel(bg, i + chunk.cx * 10000 + chunk.cz * 100, 1);
+      colors[i * 3 + 2] = varyChannel(bb, i + chunk.cx * 10000 + chunk.cz * 100, 2);
+    }
+
+    posAttr.needsUpdate = true;
+    geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geometry.computeVertexNormals();
+
+    const material = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.85,
+      metalness: 0.0,
+      flatShading: false,
+    });
+
+    const terrainMesh = new THREE.Mesh(geometry, material);
+    terrainMesh.receiveShadow = true;
+    // Position mesh at chunk's world origin
+    terrainMesh.position.set(chunk.origin_x, 0, chunk.origin_z);
+    this.scene.add(terrainMesh);
+
+    // Water plane for this chunk
+    const waterLevel = chunk.max_elevation * WATER_LEVEL_FRACTION;
+    const waterGeo = new THREE.PlaneGeometry(fullSize, fullSize);
+    waterGeo.rotateX(-Math.PI / 2);
+
+    const waterMat = new THREE.MeshStandardMaterial({
+      color: 0x1a6e8e,
+      transparent: true,
+      opacity: 0.6,
+      roughness: 0.1,
+      metalness: 0.3,
+    });
+
+    const waterMesh = new THREE.Mesh(waterGeo, waterMat);
+    waterMesh.position.set(
+      chunk.origin_x + fullSize / 2,
+      waterLevel,
+      chunk.origin_z + fullSize / 2,
+    );
+    waterMesh.receiveShadow = true;
+    this.scene.add(waterMesh);
+
+    this.chunks.set(key, {
+      terrainMesh,
+      waterMesh,
+      geometry,
+      material,
+      waterGeometry: waterGeo,
+      waterMaterial: waterMat,
+    });
+  }
+
+  /** Get the number of loaded chunks. */
+  getChunkCount(): number {
+    return this.chunks.size;
+  }
+
+  /** Check if a chunk is loaded. */
+  hasChunk(cx: number, cz: number): boolean {
+    return this.chunks.has(`${cx},${cz}`);
+  }
+
+  private disposeChunkMesh(cm: ChunkMesh): void {
+    this.scene.remove(cm.terrainMesh);
+    this.scene.remove(cm.waterMesh);
+    cm.geometry.dispose();
+    cm.material.dispose();
+    cm.waterGeometry.dispose();
+    cm.waterMaterial.dispose();
+  }
+
+  /**
    * Remove meshes from the scene and release all GPU resources.
    */
   dispose(): void {
+    // Dispose monolithic meshes
     if (this.terrainMesh) {
       this.scene.remove(this.terrainMesh);
       this.terrainMesh = null;
@@ -181,17 +280,19 @@ export class TerrainRenderer {
       this.scene.remove(this.waterMesh);
       this.waterMesh = null;
     }
-
     this.terrainGeometry?.dispose();
     this.terrainGeometry = null;
-
     this.terrainMaterial?.dispose();
     this.terrainMaterial = null;
-
     this.waterGeometry?.dispose();
     this.waterGeometry = null;
-
     this.waterMaterial?.dispose();
     this.waterMaterial = null;
+
+    // Dispose all chunk meshes
+    for (const cm of this.chunks.values()) {
+      this.disposeChunkMesh(cm);
+    }
+    this.chunks.clear();
   }
 }

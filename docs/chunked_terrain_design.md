@@ -14,8 +14,8 @@ Current terrain is monolithic (512x512 max). This limits:
 
 ```
 World: 10,000 x 10,000 meters (10km x 10km = 100 km²)
-Chunk: 256 x 256 meters each
-Grid:  ~39 x 39 = ~1,521 chunks
+Chunk: 1,024 x 1,024 meters each
+Grid:  ~10 x 10 = ~100 chunks
 
 Each chunk is independently generated via seeded noise.
 Only chunks near active drones or the camera are fully loaded.
@@ -43,7 +43,7 @@ Each chunk is generated deterministically from:
 
 The sim engine only ticks drones/survivors in "active" chunks:
 - A chunk is ACTIVE if any drone is within 1 chunk radius of it
-- Fog-of-war is tracked per-chunk (256x256 grid per chunk)
+- Fog-of-war is tracked per-chunk (1024x1024 grid per chunk)
 - Global state: drone positions, mission progress, total coverage
 - Per-chunk state: heightmap, biome map, fog grid, local survivors
 
@@ -60,7 +60,7 @@ Per tick:
 
 On camera move / chunk enter viewport:
   → Client requests chunk terrain data
-  → Server sends chunk heightmap + biome (base64, ~130KB per chunk)
+  → Server sends chunk heightmap + biome (base64, ~2MB per chunk)
 
 Chunk eviction:
   → Client disposes chunks far from camera

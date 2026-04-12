@@ -26,7 +26,7 @@ from src.simulation.types import Biome, SimConfig, Survivor, Vec3
 # systems produce identical elevation values at matching world coordinates.
 # ---------------------------------------------------------------------------
 
-_OCTAVES = 3  # Reduced from 5 for chunk generation speed (still looks good)
+_OCTAVES = 4  # Balanced detail vs. generation speed for 1024x1024 chunks
 _LACUNARITY = 2.0
 _PERSISTENCE = 0.5
 _BASE_SCALE = 0.005
@@ -112,6 +112,42 @@ def _sample_noise(
     return value
 
 
+_GEN_RESOLUTION = 128  # Internal noise generation resolution (upscaled to chunk_size)
+
+
+def _bilinear_upsample(coarse: np.ndarray, target_size: int) -> np.ndarray:
+    """Upsample a 2D array to target_size x target_size via bilinear interpolation."""
+    src_h, src_w = coarse.shape
+    # Create target coordinate grids mapped to source space
+    y_target = np.linspace(0, src_h - 1, target_size)
+    x_target = np.linspace(0, src_w - 1, target_size)
+
+    # Integer and fractional parts
+    y0 = np.floor(y_target).astype(int)
+    x0 = np.floor(x_target).astype(int)
+    y1 = np.minimum(y0 + 1, src_h - 1)
+    x1 = np.minimum(x0 + 1, src_w - 1)
+
+    fy = y_target - y0
+    fx = x_target - x0
+
+    # 2D bilinear interpolation using outer products
+    fy = fy[:, np.newaxis]  # (target_size, 1)
+    fx = fx[np.newaxis, :]  # (1, target_size)
+
+    top_left = coarse[np.ix_(y0, x0)]
+    top_right = coarse[np.ix_(y0, x1)]
+    bottom_left = coarse[np.ix_(y1, x0)]
+    bottom_right = coarse[np.ix_(y1, x1)]
+
+    return (
+        top_left * (1 - fy) * (1 - fx)
+        + top_right * (1 - fy) * fx
+        + bottom_left * fy * (1 - fx)
+        + bottom_right * fy * fx
+    )
+
+
 def _generate_chunk_noise(
     noise_gen: OpenSimplex,
     origin_x: int,
@@ -121,25 +157,33 @@ def _generate_chunk_noise(
 ) -> np.ndarray:
     """Generate a *size x size* noise patch at a world-space origin.
 
-    Uses vectorized noise2array for performance (~16x faster than per-pixel).
-    Returns a raw (un-normalised) float64 array.
+    Generates at a lower internal resolution (_GEN_RESOLUTION x _GEN_RESOLUTION)
+    and upscales via bilinear interpolation for performance. This makes 1024x1024
+    chunks generate in ~1s instead of ~37s.
     """
-    result = np.zeros((size, size), dtype=np.float64)
+    gen_size = min(size, _GEN_RESOLUTION)
+    step = size / gen_size
+
+    coarse = np.zeros((gen_size, gen_size), dtype=np.float64)
     amplitude = 1.0
     frequency = base_scale
 
-    # Build world-space coordinate arrays
-    cols = np.arange(origin_x, origin_x + size, dtype=np.float64)
-    rows = np.arange(origin_z, origin_z + size, dtype=np.float64)
+    # Build world-space coordinate arrays at coarse resolution
+    cols = np.arange(gen_size, dtype=np.float64) * step + origin_x
+    rows = np.arange(gen_size, dtype=np.float64) * step + origin_z
 
     for _ in range(_OCTAVES):
         xs = cols * frequency
         ys = rows * frequency
-        result += amplitude * noise_gen.noise2array(xs, ys)
+        coarse += amplitude * noise_gen.noise2array(xs, ys)
         amplitude *= _PERSISTENCE
         frequency *= _LACUNARITY
 
-    return result
+    if gen_size == size:
+        return coarse
+
+    # Upscale to full chunk resolution via numpy bilinear interpolation
+    return _bilinear_upsample(coarse, size)
 
 
 def _normalise(arr: np.ndarray) -> np.ndarray:
@@ -298,6 +342,43 @@ class ChunkedWorld:
         self._chunks_x = math.ceil(world_size / chunk_size)
         self._chunks_z = math.ceil(world_size / chunk_size)
 
+        # Survivor clusters: scattered across the world. Some near enough to the
+        # base that drones will find them quickly, others far away requiring
+        # real strategy. Base is at ~15% of world_size.
+        rng = np.random.default_rng(seed + 999)
+        base_x = world_size * 0.15
+        base_z = world_size * 0.15
+        self._survivor_clusters: list[tuple[float, float, float, float]] = []
+        # Near cluster: 1-2km from base — drones reach this in ~2 minutes
+        self._survivor_clusters.append((
+            base_x + float(rng.uniform(800, 1500)),
+            base_z + float(rng.uniform(800, 1500)),
+            world_size * 0.06,  # ~600m radius
+            0.3,  # 30% of survivors here
+        ))
+        # Mid-range clusters: 3-5km from base
+        for _ in range(2):
+            angle = float(rng.uniform(0, 2 * math.pi))
+            dist = float(rng.uniform(0.3, 0.5)) * world_size
+            cx = base_x + math.cos(angle) * dist
+            cz = base_z + math.sin(angle) * dist
+            cx = max(world_size * 0.1, min(world_size * 0.9, cx))
+            cz = max(world_size * 0.1, min(world_size * 0.9, cz))
+            self._survivor_clusters.append((
+                cx, cz,
+                world_size * 0.08,
+                0.2,
+            ))
+        # Far clusters: 6-9km from base — hard to reach, battery critical
+        for _ in range(2):
+            cx = float(rng.uniform(0.6, 0.9)) * world_size
+            cz = float(rng.uniform(0.6, 0.9)) * world_size
+            self._survivor_clusters.append((
+                cx, cz,
+                world_size * 0.06,
+                0.15,
+            ))
+
         # Noise generators — shared across all chunks for seamless edges.
         self._noise_elev = OpenSimplex(seed=seed)
         self._noise_moist = OpenSimplex(seed=seed + _MOISTURE_SEED_OFFSET)
@@ -305,6 +386,7 @@ class ChunkedWorld:
         # Cache
         self._cache: dict[ChunkCoord, TerrainChunk] = {}
         self._last_access: dict[ChunkCoord, float] = {}
+        self._all_survivors_cache: list[Survivor] | None = None
 
         # Pre-compute global noise range for normalisation.
         # To keep chunk edges truly seamless we normalise using a fixed global
@@ -382,14 +464,21 @@ class ChunkedWorld:
         heightmap = norm_elev * self._config.max_elevation
         biome_map = _classify_biomes(norm_elev, norm_moist)
 
-        # Survivors proportional to chunk area / world area
-        chunk_area = cs * cs
-        # Use survivor_count from config as the global count for the
-        # *original* terrain_size; scale to chunked world area.
-        # We use a density-based approach: survivor_count / (terrain_size^2)
-        # scaled up to the full world.
-        density = self._config.survivor_count / (self._config.terrain_size**2)
-        survivors_for_chunk = max(1, round(density * chunk_area))
+        # Survivors: sum contributions from all clusters
+        chunk_center_x = coord.cx * cs + cs / 2.0
+        chunk_center_z = coord.cz * cs + cs / 2.0
+        survivors_for_chunk = 0
+        for cl_x, cl_z, cl_r, cl_weight in self._survivor_clusters:
+            dx = chunk_center_x - cl_x
+            dz = chunk_center_z - cl_z
+            dist = math.sqrt(dx * dx + dz * dz)
+            if dist < cl_r:
+                falloff = math.exp(-(dist ** 2) / (2.0 * (cl_r / 2.5) ** 2))
+                survivors_for_chunk += max(1, round(
+                    self._config.survivor_count * cl_weight * falloff
+                ))
+            elif dist < cl_r * 1.5:
+                survivors_for_chunk += 1 if (coord.cx + coord.cz) % 3 == 0 else 0
 
         survivors = _place_chunk_survivors(
             coord, cs, heightmap, biome_map, survivors_for_chunk, self._seed
@@ -528,17 +617,32 @@ class ChunkedWorld:
     # Serialization
     # ------------------------------------------------------------------
 
+    _SERIALIZE_RESOLUTION = 256  # Downsample to this before sending over WebSocket
+
     def serialize_chunk(self, coord: ChunkCoord) -> dict:
-        """Serialize a chunk for WebSocket transmission (base64 encoded)."""
+        """Serialize a chunk for WebSocket transmission (base64 encoded).
+
+        Downsamples from chunk_size to _SERIALIZE_RESOLUTION to keep message
+        sizes manageable (~260 KB instead of ~4.2 MB per chunk).
+        """
         chunk = self.get_chunk(coord)
         max_elev = max(self._config.max_elevation, 1.0)
+        cs = self._chunk_size
+        res = min(self._SERIALIZE_RESOLUTION, cs)
 
-        hm_normalised = chunk.heightmap.astype(np.float32) / max_elev
+        # Downsample heightmap and biome map if chunk is larger than target resolution
+        if cs > res:
+            step = cs // res
+            hm_ds = chunk.heightmap[::step, ::step].astype(np.float32)
+            bm_ds = chunk.biome_map[::step, ::step].astype(np.uint8)
+        else:
+            hm_ds = chunk.heightmap.astype(np.float32)
+            bm_ds = chunk.biome_map.astype(np.uint8)
+
+        hm_normalised = hm_ds / max_elev
         hm_uint16 = (np.clip(hm_normalised, 0.0, 1.0) * 65535).astype(np.uint16)
         hm_b64 = base64.b64encode(hm_uint16.tobytes()).decode("ascii")
-
-        bm_uint8 = chunk.biome_map.astype(np.uint8)
-        bm_b64 = base64.b64encode(bm_uint8.tobytes()).decode("ascii")
+        bm_b64 = base64.b64encode(bm_ds.tobytes()).decode("ascii")
 
         origin_x, origin_z = self.chunk_to_world(coord)
 
@@ -548,6 +652,7 @@ class ChunkedWorld:
             "origin_x": origin_x,
             "origin_z": origin_z,
             "size": self._chunk_size,
+            "resolution": res,
             "max_elevation": self._config.max_elevation,
             "heightmap_b64": hm_b64,
             "biome_map_b64": bm_b64,
@@ -571,6 +676,65 @@ class ChunkedWorld:
     # ------------------------------------------------------------------
     # Stats / accessors
     # ------------------------------------------------------------------
+
+    def get_all_survivors(self) -> list[Survivor]:
+        """Get ALL survivors across the entire world. Cached after first call.
+
+        For cached chunks, returns actual survivors. For uncached chunks,
+        computes survivor positions from cluster geometry without generating
+        terrain (uses ground-level Y=0 for uncached positions).
+        """
+        if self._all_survivors_cache is not None:
+            return self._all_survivors_cache
+
+        all_survivors: list[Survivor] = []
+        cs = self._chunk_size
+
+        for cz in range(self._chunks_z):
+            for cx in range(self._chunks_x):
+                coord = ChunkCoord(cx, cz)
+                if coord in self._cache:
+                    all_survivors.extend(self._cache[coord].survivors)
+                else:
+                    # Compute survivor count from cluster distances
+                    chunk_center_x = cx * cs + cs / 2.0
+                    chunk_center_z = cz * cs + cs / 2.0
+                    survivors_for_chunk = 0
+                    for cl_x, cl_z, cl_r, cl_weight in self._survivor_clusters:
+                        dx_ = chunk_center_x - cl_x
+                        dz_ = chunk_center_z - cl_z
+                        dist = math.sqrt(dx_ * dx_ + dz_ * dz_)
+                        if dist < cl_r:
+                            falloff = math.exp(-(dist ** 2) / (2.0 * (cl_r / 2.5) ** 2))
+                            survivors_for_chunk += max(1, round(
+                                self._config.survivor_count * cl_weight * falloff
+                            ))
+                        elif dist < cl_r * 1.5:
+                            survivors_for_chunk += 1 if (cx + cz) % 3 == 0 else 0
+
+                    if survivors_for_chunk > 0:
+                        chunk_seed = self._seed + cx * 73856093 + cz * 19349669
+                        rng = np.random.default_rng(chunk_seed & 0xFFFFFFFF)
+                        origin_x = cx * cs
+                        origin_z = cz * cs
+                        for i in range(survivors_for_chunk):
+                            sx = origin_x + float(rng.uniform(10, cs - 10))
+                            sz = origin_z + float(rng.uniform(10, cs - 10))
+                            # Use Y=50 as approximate ground level (avoid slow chunk gen)
+                            sid = cx * 100000 + cz * 1000 + i
+                            all_survivors.append(Survivor(
+                                id=sid,
+                                position=Vec3(x=sx, y=50.0, z=sz),
+                                mobile=bool(rng.random() < 0.4),
+                                speed=float(rng.uniform(0.3, 0.8)),
+                            ))
+
+        self._all_survivors_cache = all_survivors
+        return all_survivors
+
+    def invalidate_survivor_cache(self) -> None:
+        """Clear the cached survivor list (call after reset)."""
+        self._all_survivors_cache = None
 
     def get_total_chunks(self) -> int:
         return self._chunks_x * self._chunks_z
@@ -596,3 +760,94 @@ class ChunkedWorld:
             del self._cache[coord]
             del self._last_access[coord]
         return len(stale)
+
+    def make_heightmap_proxy(self) -> LazyHeightmap:
+        """Create a numpy-array-like proxy backed by this ChunkedWorld."""
+        return LazyHeightmap(self)
+
+    def make_biome_proxy(self) -> LazyBiomeMap:
+        """Create a numpy-array-like proxy backed by this ChunkedWorld."""
+        return LazyBiomeMap(self)
+
+
+# ---------------------------------------------------------------------------
+# Lazy array proxies — allow agent code to do heightmap[row][col] lookups
+# without materializing the entire 10km x 10km array in memory.
+# ---------------------------------------------------------------------------
+
+
+class _LazyRow:
+    """Proxy for a single row of the lazy heightmap."""
+
+    __slots__ = ("_cw", "_row", "_is_biome")
+
+    def __init__(self, cw: ChunkedWorld, row: int, *, is_biome: bool = False) -> None:
+        self._cw = cw
+        self._row = row
+        self._is_biome = is_biome
+
+    def __getitem__(self, col: int | slice) -> float | int:
+        if isinstance(col, slice):
+            raise TypeError("Slice indexing not supported on chunked terrain proxy")
+        if self._is_biome:
+            return self._cw.get_biome_at(float(int(col)), float(self._row))
+        return self._cw.get_heightmap_at(float(int(col)), float(self._row))
+
+
+class LazyHeightmap:
+    """Numpy-array-like proxy for ChunkedWorld heightmap lookups.
+
+    Supports ``proxy[row][col]``, ``proxy[row, col]``, and numpy fancy
+    indexing ``proxy[row_array, col_array]`` access patterns.
+    """
+
+    def __init__(self, cw: ChunkedWorld) -> None:
+        self._cw = cw
+        ws = cw.get_world_size()
+        self.shape = (ws, ws)
+        self.dtype = np.float64
+
+    def __getitem__(self, key: int | tuple) -> float | np.ndarray | _LazyRow:
+        if isinstance(key, (int, np.integer)):
+            return _LazyRow(self._cw, int(key))
+        if isinstance(key, tuple) and len(key) == 2:
+            rows, cols = key
+            # Scalar indexing
+            if isinstance(rows, (int, np.integer)) and isinstance(cols, (int, np.integer)):
+                return self._cw.get_heightmap_at(float(int(cols)), float(int(rows)))
+            # Fancy indexing with arrays
+            if isinstance(rows, np.ndarray) and isinstance(cols, np.ndarray):
+                result = np.empty(len(rows), dtype=np.float64)
+                for i in range(len(rows)):
+                    result[i] = self._cw.get_heightmap_at(float(int(cols[i])), float(int(rows[i])))
+                return result
+        raise TypeError(f"Unsupported indexing: {type(key)}")
+
+
+class LazyBiomeMap:
+    """Numpy-array-like proxy for ChunkedWorld biome lookups.
+
+    Supports scalar and fancy (array) indexing.
+    """
+
+    def __init__(self, cw: ChunkedWorld) -> None:
+        self._cw = cw
+        ws = cw.get_world_size()
+        self.shape = (ws, ws)
+        self.dtype = np.int32
+
+    def __getitem__(self, key: int | tuple) -> int | np.ndarray | _LazyRow:
+        if isinstance(key, (int, np.integer)):
+            return _LazyRow(self._cw, int(key), is_biome=True)
+        if isinstance(key, tuple) and len(key) == 2:
+            rows, cols = key
+            # Scalar indexing
+            if isinstance(rows, (int, np.integer)) and isinstance(cols, (int, np.integer)):
+                return self._cw.get_biome_at(float(int(cols)), float(int(rows)))
+            # Fancy indexing with arrays
+            if isinstance(rows, np.ndarray) and isinstance(cols, np.ndarray):
+                result = np.empty(len(rows), dtype=np.int32)
+                for i in range(len(rows)):
+                    result[i] = self._cw.get_biome_at(float(int(cols[i])), float(int(rows[i])))
+                return result
+        raise TypeError(f"Unsupported indexing: {type(key)}")

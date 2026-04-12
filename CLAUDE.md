@@ -1,5 +1,17 @@
 # Autonomous Drone Swarm Coordination Simulator
 
+## Debugging Rules — NEVER GUESS
+
+When something doesn't work, **do not guess** at the cause. Instead:
+
+1. **Trace the actual data.** Start from the source and follow it through every step to where it disappears. Print/log real values at each stage.
+2. **Reproduce with a script.** Write a short Python or JS snippet that exercises the exact code path and prints the result. If it works standalone, the bug is in the integration — narrow down which layer.
+3. **Check the wire.** For frontend issues, check what the WebSocket actually sends (not what you think it sends). For backend issues, check what the function actually returns (not what the types say it should).
+4. **Never assume the user is wrong.** If the user says "it doesn't work," the bug is in the code. Period.
+5. **Add diagnostic logging before fixing.** Confirm the hypothesis with evidence, then fix.
+
+The `/verify` skill exists to catch spatial/rendering bugs before deploying. Use it.
+
 ## Project Overview
 
 A browser-based simulator of autonomous drone swarms performing search-and-rescue over procedurally generated terrain. Features multi-agent coordination under partial observability, LLM-powered mission planning, and human-in-the-loop interaction.

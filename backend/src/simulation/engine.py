@@ -131,7 +131,7 @@ def tick(
     for d in drones:
         if d.status == DroneStatus.FAILED:
             continue
-        detected_ids = detect_survivors(d, tuple(survivors), world.terrain.biome_map)
+        detected_ids = detect_survivors(d, tuple(survivors), world.terrain.biome_map, config=config)
         for sid in detected_ids:
             survivors[sid] = replace(
                 survivors[sid],
@@ -287,3 +287,236 @@ def get_coverage_pct(fog_grid: np.ndarray) -> float:
     total = fog_grid.size
     explored = np.count_nonzero(fog_grid != FOG_UNEXPLORED)
     return (explored / total) * 100.0
+
+
+# ---------------------------------------------------------------------------
+# Chunked world support
+# ---------------------------------------------------------------------------
+
+
+def tick_chunked(
+    world: WorldState,
+    dt: float,
+    chunked_world: object,  # ChunkedWorld
+    commands: list[Command] | None = None,
+    rng: np.random.Generator | None = None,
+    config: SimConfig | None = None,
+) -> WorldState:
+    """Advance simulation by one timestep using chunked terrain lookups.
+
+    Same logic as ``tick()`` but uses the ChunkedWorld for height and biome
+    lookups instead of a monolithic numpy array.
+    """
+    from src.terrain.chunked import ChunkedWorld
+
+    cw: ChunkedWorld = chunked_world  # type: ignore[assignment]
+
+    if config is None:
+        config = SimConfig()
+    if commands is None:
+        commands = []
+
+    events: list[SimEvent] = []
+    new_tick = world.tick + 1
+    new_elapsed = world.elapsed + dt
+
+    world_size = cw.get_world_size()
+    bounds = (world_size, world_size)
+
+    # --- 1. Apply commands to drones ---
+    drones = list(world.drones)
+    for cmd in commands:
+        drones = _apply_command(drones, cmd)
+
+    # --- 2. Update drone physics (chunked height lookup) ---
+    drones = [
+        update_drone_physics(
+            d, dt, None, config,
+            height_fn=cw.get_heightmap_at,
+            world_bounds=bounds,
+        )
+        for d in drones
+    ]
+
+    # --- 3. Update drone batteries ---
+    updated_drones: list[Drone] = []
+    for d in drones:
+        old_status = d.status
+        d = update_drone_battery(d, dt, config)
+
+        if d.status == DroneStatus.FAILED and old_status != DroneStatus.FAILED:
+            events.append(SimEvent(EventType.DRONE_FAILED, new_tick, drone_id=d.id))
+        elif d.status == DroneStatus.RETURNING and old_status == DroneStatus.ACTIVE:
+            events.append(SimEvent(EventType.DRONE_BATTERY_CRITICAL, new_tick, drone_id=d.id))
+            d = replace(d, target=world.base_position)
+
+        updated_drones.append(d)
+    drones = updated_drones
+
+    # --- 4. Random failure checks ---
+    if rng is not None:
+        new_drones: list[Drone] = []
+        for d in drones:
+            old_comms = d.comms_active
+            d = check_drone_failures(d, rng, config)
+            if not d.comms_active and old_comms:
+                events.append(SimEvent(EventType.DRONE_COMMS_LOST, new_tick, drone_id=d.id))
+            new_drones.append(d)
+        drones = new_drones
+
+    # --- 4b. Gather survivors from active chunks ---
+    drone_positions = [d.position for d in drones if d.status != DroneStatus.FAILED]
+    active_chunks = cw.get_active_chunks(drone_positions)
+    all_survivors: list = []
+    for chunk in active_chunks:
+        all_survivors.extend(chunk.survivors)
+
+
+    # Update mobile survivors
+    if rng is not None:
+        survivors_tuple = tuple(all_survivors)
+        # Use lightweight terrain stub for survivor updates
+        survivors_tuple = update_survivors(survivors_tuple, world.terrain, dt, rng)
+    else:
+        survivors_tuple = tuple(all_survivors)
+
+    # --- 5. Detect survivors (chunked biome lookup) ---
+    survivors = list(survivors_tuple)
+    survivor_by_id = {s.id: i for i, s in enumerate(survivors)}
+    for d in drones:
+        if d.status == DroneStatus.FAILED:
+            continue
+        detected_ids = detect_survivors(
+            d, tuple(survivors),
+            biome_fn=cw.get_biome_at,
+            height_fn=cw.get_heightmap_at,
+            config=config,
+        )
+        for sid in detected_ids:
+            idx = survivor_by_id.get(sid)
+            if idx is not None:
+                survivors[idx] = replace(
+                    survivors[idx],
+                    discovered=True,
+                    discovered_by=d.id,
+                    discovered_at_tick=new_tick,
+                )
+                events.append(
+                    SimEvent(EventType.SURVIVOR_FOUND, new_tick, drone_id=d.id, survivor_id=sid)
+                )
+                # Update chunk survivor state
+                for chunk in active_chunks:
+                    for ci, cs in enumerate(chunk.survivors):
+                        if cs.id == sid:
+                            chunk.survivors[ci] = survivors[idx]
+
+    # --- 6. Compute communication links ---
+    drones_tuple = tuple(drones)
+    comms_links = compute_comms_links(drones_tuple)
+
+    # --- 7. Update fog-of-war per-chunk + global coarse grid ---
+    for chunk in active_chunks:
+        _update_chunk_fog(chunk, drones_tuple, config)
+
+    # Update the coarse global fog grid (used by agent AI)
+    fog_grid = world.fog_grid
+    fog_h, fog_w = fog_grid.shape
+    fog_scale = cw.get_world_size() / max(fog_w, 1)
+    new_fog = fog_grid.copy()
+    for drone in drones:
+        if drone.status == DroneStatus.FAILED or not drone.sensor_active:
+            continue
+        fog_cx = int(drone.position.x / fog_scale)
+        fog_cz = int(drone.position.z / fog_scale)
+        fog_r = max(1, int(math.ceil(drone.sensor_range / fog_scale)))
+        r_min = max(0, fog_cz - fog_r)
+        r_max = min(fog_h, fog_cz + fog_r + 1)
+        c_min = max(0, fog_cx - fog_r)
+        c_max = min(fog_w, fog_cx + fog_r + 1)
+        if r_min < r_max and c_min < c_max:
+            new_fog[r_min:r_max, c_min:c_max] = FOG_EXPLORED
+
+    # Compute global coverage from active chunks
+    total_cells = 0
+    explored_cells = 0
+    for chunk in active_chunks:
+        total_cells += chunk.fog_grid.size
+        explored_cells += np.count_nonzero(chunk.fog_grid != FOG_UNEXPLORED)
+
+    # --- 8. Handle returning drones that reach base ---
+    final_drones: list[Drone] = []
+    for d in drones:
+        if d.status == DroneStatus.RETURNING and d.target is not None:
+            dist_to_base = (d.position - world.base_position).length_xz()
+            if dist_to_base < 5.0:
+                d = replace(
+                    d,
+                    status=DroneStatus.RECHARGING,
+                    velocity=Vec3(0, 0, 0),
+                    target=None,
+                    current_task="recharging",
+                )
+                events.append(SimEvent(EventType.DRONE_RETURNED, new_tick, drone_id=d.id))
+        elif d.status == DroneStatus.RECHARGING:
+            new_battery = min(100.0, d.battery + 2.0 * dt)
+            if new_battery >= 99.0:
+                d = replace(d, battery=100.0, status=DroneStatus.ACTIVE, current_task="idle")
+            else:
+                d = replace(d, battery=new_battery)
+        final_drones.append(d)
+
+    return WorldState(
+        tick=new_tick,
+        elapsed=new_elapsed,
+        terrain=world.terrain,
+        drones=tuple(final_drones),
+        survivors=tuple(survivors),
+        fog_grid=new_fog,
+        comms_links=comms_links,
+        events=tuple(events),
+        base_position=world.base_position,
+        tick_rate=world.tick_rate,
+    )
+
+
+def _update_chunk_fog(
+    chunk: object,  # TerrainChunk
+    drones: tuple[Drone, ...],
+    config: SimConfig,
+) -> None:
+    """Update fog-of-war for a single chunk in-place."""
+    from src.terrain.chunked import TerrainChunk
+
+    tc: TerrainChunk = chunk  # type: ignore[assignment]
+    cs = tc.fog_grid.shape[0]  # chunk size
+    origin_x = tc.coord.cx * cs
+    origin_z = tc.coord.cz * cs
+
+    for drone in drones:
+        if drone.status == DroneStatus.FAILED or not drone.sensor_active:
+            continue
+
+        # Drone position in chunk-local coordinates
+        local_x = drone.position.x - origin_x
+        local_z = drone.position.z - origin_z
+        radius = int(math.ceil(drone.sensor_range))
+
+        # Bounding box (clipped to chunk)
+        r_min = max(0, int(local_z) - radius)
+        r_max = min(cs, int(local_z) + radius + 1)
+        c_min = max(0, int(local_x) - radius)
+        c_max = min(cs, int(local_x) + radius + 1)
+
+        if r_min >= r_max or c_min >= c_max:
+            continue
+
+        rows = np.arange(r_min, r_max)
+        cols = np.arange(c_min, c_max)
+        rr, cc = np.meshgrid(rows, cols, indexing="ij")
+
+        dist_sq = (cc - local_x) ** 2 + (rr - local_z) ** 2
+        within_range = dist_sq <= drone.sensor_range ** 2
+
+        tc.fog_grid[r_min:r_max, c_min:c_max] = np.where(
+            within_range, FOG_EXPLORED, tc.fog_grid[r_min:r_max, c_min:c_max]
+        )

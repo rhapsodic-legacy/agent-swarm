@@ -98,6 +98,26 @@ class SwarmCoordinator:
         # LLM agents
         self.mission_planner = MissionPlanner()
         self.drone_reasoner = DroneReasoner()
+        # Activity log — ring buffer of recent entries for frontend display
+        self._activity_log: list[dict] = []
+        self._max_log_entries = 200
+
+    def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
+        """Append an entry to the activity log ring buffer."""
+        entry = {
+            "tick": tick,
+            "elapsed": round(elapsed, 1),
+            "drone_id": drone_id,
+            "message": message,
+            "category": category,  # "info", "decision", "alert", "event"
+        }
+        self._activity_log.append(entry)
+        if len(self._activity_log) > self._max_log_entries:
+            self._activity_log = self._activity_log[-self._max_log_entries:]
+
+    def get_recent_log(self, since_tick: int = 0) -> list[dict]:
+        """Return log entries since the given tick (for incremental frontend updates)."""
+        return [e for e in self._activity_log if e["tick"] >= since_tick]
 
     def update(self, world: WorldState, config: SimConfig) -> list[Command]:
         """Produce commands for all active drones based on current world state."""
@@ -113,38 +133,58 @@ class SwarmCoordinator:
         if not self.zones_assigned:
             self._assign_zones(world)
             self.zones_assigned = True
+            active = sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE)
+            self._log(world.tick, world.elapsed, None, f"Zones assigned to {active} drones. Beginning spread.", "decision")
 
         # Update mission phase based on coverage
         coverage = self._get_coverage(world.fog_grid)
+        old_phase = self.phase
         self._update_phase(coverage)
+        if self.phase != old_phase:
+            self._log(world.tick, world.elapsed, None,
+                      f"Phase: {old_phase.name} → {self.phase.name} (coverage {coverage:.1f}%)", "decision")
 
         # Share knowledge between connected drones
         self._share_knowledge(world)
 
+        # --- Log significant events ---
+        for event in world.events:
+            if event.type.name == "SURVIVOR_FOUND":
+                self._log(world.tick, world.elapsed, event.drone_id,
+                          f"Survivor #{event.survivor_id} found!", "event")
+            elif event.type.name == "DRONE_FAILED":
+                self._log(world.tick, world.elapsed, event.drone_id,
+                          "Drone failed — battery depleted.", "alert")
+            elif event.type.name == "DRONE_RETURNED":
+                self._log(world.tick, world.elapsed, event.drone_id,
+                          "Returned to base. Recharging.", "info")
+            elif event.type.name == "DRONE_COMMS_LOST":
+                self._log(world.tick, world.elapsed, event.drone_id,
+                          "Comms lost — out of range.", "alert")
+
         # --- LLM Layer: Mission Planner (Claude) ---
-        # Record events for the planner
         for event in world.events:
             self.mission_planner.record_event(
                 event.type.name,
                 f"drone={event.drone_id} survivor={event.survivor_id}",
             )
 
-        # Trigger planning if appropriate
         if self.mission_planner.should_plan(world):
             self.mission_planner.trigger_plan(world)
+            self._log(world.tick, world.elapsed, None, "Mission planner re-evaluating strategy...", "decision")
 
-        # Consume any ready planning results
         directive = self.mission_planner.consume_result()
         if directive:
             self._apply_mission_directive(directive, world)
+            briefing = directive.get("briefing", "")
+            if briefing:
+                self._log(world.tick, world.elapsed, None, f"MCP: {briefing}", "decision")
 
         # --- LLM Layer: Drone Reasoner (Mistral) ---
-        # Trigger reasoning for drones that are due
         for drone in world.drones:
             if self.drone_reasoner.should_reason(drone, world.tick):
                 self.drone_reasoner.trigger_reasoning(drone, world)
 
-        # Consume completed drone reasoning decisions
         llm_decisions = self.drone_reasoner.consume_decisions()
 
         # Generate commands for each active drone
@@ -153,34 +193,37 @@ class SwarmCoordinator:
                 continue
 
             if drone.status == DroneStatus.RETURNING:
-                # Already returning — don't override
                 continue
 
             agent = self.agents[drone.id]
 
-            # Smart battery check — estimate if drone can return to base
+            # Smart battery check
             if drone.status == DroneStatus.ACTIVE and self._should_return_for_fuel(drone, world):
                 agent.task = DroneTask.RETURNING_TO_BASE
                 agent.current_target = world.base_position
                 commands.append(
                     Command(type="return_to_base", drone_id=drone.id, target=world.base_position)
                 )
+                self._log(world.tick, world.elapsed, drone.id,
+                          f"RTB — battery {drone.battery:.0f}%, need fuel for return trip.", "alert")
                 continue
 
-            # Check if LLM has a decision for this drone
+            # LLM decision
             llm_decision = llm_decisions.get(drone.id)
             if llm_decision:
                 cmd = self._apply_llm_decision(drone, agent, llm_decision, world)
                 if cmd is not None:
                     commands.append(cmd)
+                    reasoning = llm_decision.get("reasoning", llm_decision.get("action", ""))
+                    self._log(world.tick, world.elapsed, drone.id,
+                              f"AI decision: {reasoning}", "decision")
                     continue
 
-            # Fallback to classical AI
+            # Classical AI
             cmd = self._decide(drone, agent, world)
             if cmd is not None:
                 commands.append(cmd)
 
-        # Handle drone failures — reassign zones
         self._handle_failures(world)
 
         return commands
@@ -234,27 +277,52 @@ class SwarmCoordinator:
         return None
 
     def _assign_zones(self, world: WorldState) -> None:
-        """Divide terrain into zones, one per active drone."""
+        """Divide terrain into zones, one per active drone.
+
+        For large chunked worlds (>2048m), limits initial zone assignment to
+        a search area around the base rather than the entire world. The search
+        area expands as coverage increases.
+        """
         active_drones = [d for d in world.drones if d.status == DroneStatus.ACTIVE]
         if not active_drones:
             return
 
-        zones = assign_zones(
-            len(active_drones),
-            world.terrain.width,
-            world.terrain.height,
-        )
+        tw = world.terrain.width
+        th = world.terrain.height
+
+        # For massive worlds, limit initial zone area to near base
+        if tw > 2048 or th > 2048:
+            base_x = int(world.base_position.x)
+            base_z = int(world.base_position.z)
+            # Start with a 3km radius, expand as coverage increases
+            radius = min(tw // 2, 3072 + int(self._get_coverage(world.fog_grid) * 50))
+            zone_x_min = max(0, base_x - radius)
+            zone_x_max = min(tw, base_x + radius)
+            zone_z_min = max(0, base_z - radius)
+            zone_z_max = min(th, base_z + radius)
+            zone_w = zone_x_max - zone_x_min
+            zone_h = zone_z_max - zone_z_min
+        else:
+            zone_x_min = 0
+            zone_z_min = 0
+            zone_w = tw
+            zone_h = th
+
+        zones = assign_zones(len(active_drones), zone_w, zone_h)
 
         for drone, zone in zip(active_drones, zones, strict=False):
             agent = self.agents[drone.id]
-            agent.zone = zone
+            # Offset zone to world coordinates
+            (r_min, c_min), (r_max, c_max) = zone
+            r_min += zone_z_min
+            r_max += zone_z_min
+            c_min += zone_x_min
+            c_max += zone_x_min
+            agent.zone = ((r_min, c_min), (r_max, c_max))
             agent.task = DroneTask.MOVING_TO_ZONE
             # Target: center of assigned zone
-            (r_min, c_min), (r_max, c_max) = zone
-            center_r = (r_min + r_max) // 2
-            center_c = (c_min + c_max) // 2
-            center_r = min(center_r, world.terrain.height - 1)
-            center_c = min(center_c, world.terrain.width - 1)
+            center_r = min((r_min + r_max) // 2, th - 1)
+            center_c = min((c_min + c_max) // 2, tw - 1)
             elev = float(world.terrain.heightmap[center_r][center_c])
             agent.current_target = Vec3(float(center_c), elev, float(center_r))
 
@@ -324,13 +392,21 @@ class SwarmCoordinator:
 
         return None
 
+    def _get_survivor_positions(self, world: WorldState) -> list[Vec3]:
+        """Collect world positions of all discovered survivors."""
+        return [s.position for s in world.survivors if s.discovered]
+
     def _pick_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
-        """Pick the next target for a drone based on the current mission phase."""
+        """Pick the next target for a drone based on the current mission phase.
+
+        Survivor positions are passed to search functions so drones prioritize
+        unexplored areas near previous discoveries (clustering heuristic).
+        """
         fog_grid = world.fog_grid
         terrain = world.terrain
+        surv_pos = self._get_survivor_positions(world)
 
         if self.phase == SearchPhase.COMPLETE:
-            # Nothing to do — return to base
             agent.task = DroneTask.RETURNING_TO_BASE
             return world.base_position
 
@@ -343,18 +419,17 @@ class SwarmCoordinator:
 
         if self.phase == SearchPhase.FRONTIER_HUNT:
             agent.task = DroneTask.FRONTIER_EXPLORING
-            result = frontier_search(drone.position, fog_grid, terrain)
+            result = frontier_search(drone.position, fog_grid, terrain, surv_pos)
             if result is not None:
                 return result
-            # Fallback to priority
-            return priority_search(drone.position, fog_grid, terrain)
+            return priority_search(drone.position, fog_grid, terrain, surv_pos)
 
         if self.phase == SearchPhase.PRIORITY_SWEEP:
             agent.task = DroneTask.PRIORITY_SEARCHING
-            result = priority_search(drone.position, fog_grid, terrain)
+            result = priority_search(drone.position, fog_grid, terrain, surv_pos)
             if result is not None:
                 return result
-            return frontier_search(drone.position, fog_grid, terrain)
+            return frontier_search(drone.position, fog_grid, terrain, surv_pos)
 
         return None
 
@@ -523,11 +598,11 @@ class SwarmCoordinator:
         time_to_base = dist_to_base / speed
 
         # Estimate battery drain for the return trip
-        drain_rate = self.config.drone_battery_drain_rate * 3.0  # conservative multiplier
+        drain_rate = self.config.drone_battery_drain_rate * 1.5  # 1.5x safety factor
         battery_needed = drain_rate * time_to_base
 
-        # Safety margin: 25% buffer so drones return well before critical
-        return drone.battery < (battery_needed + 25.0)
+        # Safety margin: 15% buffer so drones return well before critical
+        return drone.battery < (battery_needed + 15.0)
 
     def _get_coverage(self, fog_grid: np.ndarray) -> float:
         """Calculate exploration coverage percentage."""

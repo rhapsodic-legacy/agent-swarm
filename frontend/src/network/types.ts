@@ -101,6 +101,8 @@ export interface StateUpdate {
   terrain?: TerrainData;
   drones: DroneState[];
   survivors: SurvivorState[];
+  /** All survivors (including undiscovered) — for God Mode debug overlay. */
+  all_survivors?: SurvivorState[];
   fog_grid: FogData;
   comms_links: [number, number][];
   events: SimEvent[];
@@ -141,6 +143,14 @@ export interface HazardInfo {
   radius: number;
 }
 
+export interface ActivityLogEntry {
+  tick: number;
+  elapsed: number;
+  drone_id: number | null;
+  message: string;
+  category: "info" | "decision" | "alert" | "event";
+}
+
 export interface AgentInfo {
   phase: string;
   briefing: string;
@@ -150,6 +160,7 @@ export interface AgentInfo {
   daycycle?: DayCycleInfo;
   metrics?: MetricsInfo;
   hazards?: HazardInfo[];
+  activity_log?: ActivityLogEntry[];
 }
 
 export interface MissionBriefing {
@@ -160,4 +171,33 @@ export interface MissionBriefing {
   reasoning: string;
 }
 
-export type ServerMessage = StateUpdate | MissionBriefing;
+/** Chunk terrain data from the chunked world system. */
+export interface ChunkTerrainData {
+  type: "chunk_terrain";
+  cx: number;
+  cz: number;
+  origin_x: number;
+  origin_z: number;
+  size: number;
+  /** Resolution of heightmap/biome arrays (e.g. 256 when downsampled from 1024). Defaults to size. */
+  resolution?: number;
+  max_elevation: number;
+  heightmap_b64: string;
+  biome_map_b64: string;
+  encoding: string;
+  survivor_count: number;
+  fog_rle?: FogData;
+}
+
+/** World overview for minimap (1 pixel per chunk). */
+export interface WorldOverview {
+  type: "world_overview";
+  chunks_x: number;
+  chunks_z: number;
+  world_size: number;
+  chunk_size: number;
+  overview_rgb_b64: string;
+  encoding: string;
+}
+
+export type ServerMessage = StateUpdate | MissionBriefing | ChunkTerrainData | WorldOverview;

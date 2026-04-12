@@ -186,7 +186,12 @@ export class InteractionManager {
 
   // --- Bound event handlers (stored for removal in dispose) ---
   private readonly handlePointerDown: (e: PointerEvent) => void;
+  private readonly handlePointerUp: (e: PointerEvent) => void;
   private readonly handleContextMenu: (e: Event) => void;
+
+  // --- Drag detection: distinguish click from drag for OrbitControls compat ---
+  private pointerDownPos: { x: number; y: number } | null = null;
+  private pointerDownButton: number = 0;
 
   constructor(
     scene: THREE.Scene,
@@ -205,11 +210,16 @@ export class InteractionManager {
 
     this.hudElement = ensureHUDElement();
 
-    // Bind event handlers.
-    this.handlePointerDown = this.onPointerDown.bind(this);
+    // Bind event handlers — use pointerup for actions so click-drag = orbit.
+    this.handlePointerDown = (e: PointerEvent) => {
+      this.pointerDownPos = { x: e.clientX, y: e.clientY };
+      this.pointerDownButton = e.button;
+    };
+    this.handlePointerUp = this.onPointerUp.bind(this);
     this.handleContextMenu = (e: Event) => e.preventDefault();
 
     this.domElement.addEventListener("pointerdown", this.handlePointerDown);
+    this.domElement.addEventListener("pointerup", this.handlePointerUp);
     this.domElement.addEventListener("contextmenu", this.handleContextMenu);
   }
 
@@ -238,6 +248,7 @@ export class InteractionManager {
   /** Clean up all event listeners, Three.js objects, and DOM elements. */
   dispose(): void {
     this.domElement.removeEventListener("pointerdown", this.handlePointerDown);
+    this.domElement.removeEventListener("pointerup", this.handlePointerUp);
     this.domElement.removeEventListener("contextmenu", this.handleContextMenu);
 
     // Selection ring.
@@ -266,11 +277,26 @@ export class InteractionManager {
   // Event Handlers
   // -----------------------------------------------------------------------
 
-  private onPointerDown(event: PointerEvent): void {
-    // Ignore middle mouse button and other non-standard buttons.
-    const isLeftClick = event.button === 0 && !event.shiftKey;
-    const isShiftClick = event.button === 0 && event.shiftKey;
-    const isRightClick = event.button === 2;
+  /** Drag threshold in pixels — clicks shorter than this are "clicks", longer are "drags". */
+  private static readonly DRAG_THRESHOLD = 6;
+
+  private onPointerUp(event: PointerEvent): void {
+    if (!this.pointerDownPos) return;
+
+    // Measure drag distance — if user dragged, let OrbitControls handle it.
+    const dx = event.clientX - this.pointerDownPos.x;
+    const dy = event.clientY - this.pointerDownPos.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const wasDrag = dist > InteractionManager.DRAG_THRESHOLD;
+
+    const button = this.pointerDownButton;
+    this.pointerDownPos = null;
+
+    if (wasDrag) return; // Let OrbitControls handle rotation/pan
+
+    const isLeftClick = button === 0 && !event.shiftKey;
+    const isShiftClick = button === 0 && event.shiftKey;
+    const isRightClick = button === 2;
 
     if (isLeftClick) {
       this.handleSelect(event);

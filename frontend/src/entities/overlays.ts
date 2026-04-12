@@ -9,6 +9,7 @@ const COMM_LINK_COLOR = new THREE.Color(0x00aaff);
 const COMM_LINK_OPACITY = 0.15;
 const SURVIVOR_COLOR = new THREE.Color(0xff2200);
 const SURVIVOR_PULSE_SPEED = 3.0;
+const SURVIVOR_SCALE = 8; // scale factor for visibility in large (10km) worlds
 
 export class OverlayRenderer {
   private scene: THREE.Scene;
@@ -114,9 +115,9 @@ export class OverlayRenderer {
     let count = 0;
     for (const s of survivors) {
       if (count >= this.maxSurvivors) break;
-      const scale = 0.8 + pulse * 0.4;
+      const scale = (0.8 + pulse * 0.4) * SURVIVOR_SCALE;
       this.mat4.makeScale(scale, scale, scale);
-      this.mat4.setPosition(s.position[0], s.position[1] + 6, s.position[2]);
+      this.mat4.setPosition(s.position[0], s.position[1] + 6 * SURVIVOR_SCALE, s.position[2]);
       this.survivorMesh.setMatrixAt(count, this.mat4);
       count++;
     }

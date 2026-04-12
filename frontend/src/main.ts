@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { SwarmClient } from "@/network/client";
 import { decodeTerrain } from "@/network/types";
-import type { HazardInfo, StateUpdate } from "@/network/types";
+import type { HazardInfo, StateUpdate, ChunkTerrainData, WorldOverview } from "@/network/types";
 import { TerrainRenderer } from "@/scene/terrain";
 import { DroneRenderer } from "@/entities/drones";
 import { FogOfWarRenderer } from "@/fog/fogOfWar";
@@ -11,6 +11,10 @@ import { InteractionManager } from "@/ui/interaction";
 import { ChatPanel } from "@/ui/chatPanel";
 import { SettingsPanel } from "@/ui/settingsPanel";
 import type { SimSettings } from "@/ui/settingsPanel";
+import { Minimap } from "@/ui/minimap";
+import { ActivityLog } from "@/ui/activityLog";
+import { GodModeOverlay } from "@/ui/godMode";
+import { HelpOverlay } from "@/ui/helpOverlay";
 
 // ============================================================================
 // Scene Setup
@@ -18,15 +22,15 @@ import type { SimSettings } from "@/ui/settingsPanel";
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x0a0a1a);
-scene.fog = new THREE.FogExp2(0x0a0a1a, 0.0008);
+scene.fog = new THREE.FogExp2(0x0a0a1a, 0.00015); // low density for 10km world
 
-// Camera
-const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 5000);
+// Camera — far plane 50km for massive chunked worlds
+const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 50000);
 camera.position.set(150, 200, 150);
 camera.lookAt(64, 0, 64);
 
 // Renderer
-const glRenderer = new THREE.WebGLRenderer({ antialias: true });
+const glRenderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
 glRenderer.setSize(window.innerWidth, window.innerHeight);
 glRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 glRenderer.shadowMap.enabled = true;
@@ -35,14 +39,26 @@ glRenderer.toneMapping = THREE.ACESFilmicToneMapping;
 glRenderer.toneMappingExposure = 1.2;
 document.getElementById("app")!.appendChild(glRenderer.domElement);
 
-// Controls
+// Controls — orbit camera with full rotation
 const controls = new OrbitControls(camera, glRenderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.05;
-controls.maxPolarAngle = Math.PI * 0.45;
+controls.enableRotate = true;
+controls.enablePan = true;
+controls.enableZoom = true;
+controls.maxPolarAngle = Math.PI * 0.49; // nearly overhead allowed
 controls.minDistance = 10;
-controls.maxDistance = 800;
+controls.maxDistance = 15000; // allow zooming way out for 10km world
 controls.target.set(64, 0, 64);
+controls.panSpeed = 3.0; // faster pan for large worlds
+controls.zoomSpeed = 1.5;
+controls.screenSpacePanning = false; // pan along ground plane, not screen plane
+// Left-click drag = rotate, right-click drag = pan, scroll = zoom
+controls.mouseButtons = {
+  LEFT: THREE.MOUSE.ROTATE,
+  MIDDLE: THREE.MOUSE.DOLLY,
+  RIGHT: THREE.MOUSE.PAN,
+};
 
 // ============================================================================
 // Lighting
@@ -52,15 +68,15 @@ const ambientLight = new THREE.AmbientLight(0x404060, 0.6);
 scene.add(ambientLight);
 
 const sunLight = new THREE.DirectionalLight(0xffeedd, 1.8);
-sunLight.position.set(200, 300, 100);
+sunLight.position.set(5000, 8000, 3000);
 sunLight.castShadow = true;
-sunLight.shadow.mapSize.set(2048, 2048);
-sunLight.shadow.camera.near = 0.5;
-sunLight.shadow.camera.far = 800;
-sunLight.shadow.camera.left = -200;
-sunLight.shadow.camera.right = 200;
-sunLight.shadow.camera.top = 200;
-sunLight.shadow.camera.bottom = -200;
+sunLight.shadow.mapSize.set(4096, 4096);
+sunLight.shadow.camera.near = 1;
+sunLight.shadow.camera.far = 20000;
+sunLight.shadow.camera.left = -5000;
+sunLight.shadow.camera.right = 5000;
+sunLight.shadow.camera.top = 5000;
+sunLight.shadow.camera.bottom = -5000;
 scene.add(sunLight);
 
 const hemiLight = new THREE.HemisphereLight(0x87ceeb, 0x362907, 0.5);
@@ -80,6 +96,10 @@ const overlayRenderer = new OverlayRenderer(scene, 100, 50);
 // ============================================================================
 
 let latestState: StateUpdate | null = null;
+
+// Chunked world state
+let worldSize = 0;
+let firstChunkReceived = false;
 
 // Hazard visualization
 let hazardMeshes: THREE.Mesh[] = [];
@@ -218,7 +238,12 @@ function updateHUD(state: StateUpdate): void {
       scene.background = new THREE.Color(bg, bg, bg + 0.02);
 
       // Update fog density (denser at night for atmosphere)
-      (scene.fog as THREE.FogExp2).density = 0.0008 + (1 - dc.sun_intensity) * 0.001;
+      (scene.fog as THREE.FogExp2).density = 0.00015 + (1 - dc.sun_intensity) * 0.0002;
+    }
+
+    // Feed activity log entries
+    if (state.agent_info.activity_log && state.agent_info.activity_log.length > 0) {
+      activityLog.addEntries(state.agent_info.activity_log);
     }
   }
 }
@@ -240,31 +265,47 @@ function setConnected(connected: boolean): void {
 const client = new SwarmClient(
   "ws://localhost:8765/ws",
   (state: StateUpdate) => {
-    // Build/rebuild terrain when it arrives (initial load or after reset)
+    // Build/rebuild monolithic terrain when it arrives (legacy small maps)
     if (state.terrain) {
       const decoded = decodeTerrain(state.terrain);
       terrainRenderer.buildFromData(decoded);
       fogRenderer.initialize(decoded.width, decoded.height);
-
-      // Clear hazards so they are rebuilt with the new terrain
       clearHazardMeshes();
 
-      // Re-center camera on terrain (scale camera distance with terrain size)
       const cx = decoded.width / 2;
       const cz = decoded.height / 2;
       const camDist = Math.max(decoded.width, decoded.height) * 0.6;
       controls.target.set(cx, 30, cz);
       camera.position.set(cx + camDist * 0.7, camDist * 0.8, cz + camDist * 0.7);
       controls.maxDistance = camDist * 3;
+      // monolithic mode
 
-      console.log("[DroneSwarm] Terrain built, visualization active");
+      console.log("[DroneSwarm] Monolithic terrain built");
     }
+
+    // Detect chunked mode from state fields
+    const rawState = state as unknown as Record<string, unknown>;
+    if (rawState.world_size && rawState.chunk_size) {
+      worldSize = rawState.world_size as number;
+    }
+
+    // Log survivor data on first few ticks
+    if (state.tick <= 3) {
+      const raw = state as unknown as Record<string, unknown>;
+      const allS = raw.all_survivors as unknown[];
+      console.log(`[DroneSwarm] tick=${state.tick} all_survivors=${allS?.length ?? 'MISSING'} survivors=${state.survivors.length}`);
+      if (allS && allS.length > 0) {
+        console.log(`[DroneSwarm] first survivor:`, allS[0]);
+      }
+    }
+
+    // Center camera on drone fleet if not already done
+    centerCameraOnDrones();
 
     // Build hazard meshes once when data first arrives
     if (!hazardsBuilt && state.agent_info?.hazards && state.agent_info.hazards.length > 0) {
       buildHazardMeshes(state.agent_info.hazards);
       hazardsBuilt = true;
-      console.log("[DroneSwarm] Hazards visualized:", state.agent_info.hazards.length);
     }
 
     latestState = state;
@@ -272,18 +313,79 @@ const client = new SwarmClient(
   setConnected,
 );
 
+// Track whether camera has been centered on the drone fleet
+let cameraCentered = false;
+
+function centerCameraOnDrones(): void {
+  if (cameraCentered || !latestState || latestState.drones.length === 0) return;
+  cameraCentered = true;
+  const d = latestState.drones[0];
+  const cx = d.position[0];
+  const cz = d.position[2];
+  const camDist = 2000;
+  controls.target.set(cx, 30, cz);
+  camera.position.set(cx + camDist * 0.4, camDist * 0.5, cz + camDist * 0.4);
+  controls.maxDistance = worldSize * 1.5 || 15000;
+  console.log(`[DroneSwarm] Camera centered on drone fleet at (${cx.toFixed(0)}, ${cz.toFixed(0)})`);
+}
+
+// Handle chunk terrain messages
+client.onChunkTerrain((chunk: ChunkTerrainData) => {
+  terrainRenderer.buildChunk(chunk);
+
+  if (!firstChunkReceived) {
+    firstChunkReceived = true;
+    controls.maxDistance = worldSize * 1.5 || chunk.size * 10;
+  }
+
+  // Try to center camera once we have drone positions
+  centerCameraOnDrones();
+
+  // Initialize fog-of-war plane once we know the world size.
+  // Fog grid resolution comes from the state_update fog_grid dimensions (separate from world size).
+  if (worldSize > 0 && !fogRenderer.isInitialized() && latestState?.fog_grid) {
+    const fogW = latestState.fog_grid.width;
+    const fogH = latestState.fog_grid.height;
+    fogRenderer.initialize(worldSize, worldSize, fogW, fogH);
+    console.log(`[DroneSwarm] Fog-of-war initialized: ${worldSize}m world, ${fogW}x${fogH} grid`);
+  }
+
+  console.log(
+    `[DroneSwarm] Chunk (${chunk.cx},${chunk.cz}) built — ${terrainRenderer.getChunkCount()} chunks loaded`,
+  );
+});
+
+// Handle world overview for minimap
+client.onWorldOverview((overview: WorldOverview) => {
+  worldSize = overview.world_size;
+  minimap.setOverview(overview);
+  console.log(
+    `[DroneSwarm] World: ${overview.world_size}m, ${overview.chunks_x}x${overview.chunks_z} chunks`,
+  );
+});
+
 // ============================================================================
 // Interaction + Chat
 // ============================================================================
 
 const interaction = new InteractionManager(scene, camera, glRenderer, client);
+const minimap = new Minimap();
 const chatPanel = new ChatPanel(client);
+const activityLog = new ActivityLog();
+const godMode = new GodModeOverlay(scene);
+const helpOverlay = new HelpOverlay();
 const settingsPanel = new SettingsPanel((config: SimSettings) => {
   // Send reset with config to backend
   paused = false;
   document.getElementById("btn-pause")!.textContent = "Pause";
+  // Clear all chunk state on reset
+  firstChunkReceived = false;
+  cameraCentered = false;
+  terrainRenderer.dispose();
+  fogRenderer.dispose();
+  clearHazardMeshes();
   client.sendSimControl("reset", undefined, config as unknown as Record<string, number>);
-  settingsPanel.toggle(); // Close panel after apply
+  settingsPanel.toggle();
   console.log("[DroneSwarm] Reset with custom config:", config);
 });
 
@@ -297,15 +399,57 @@ client.connect();
 
 const clock = new THREE.Clock();
 
+// WASD pan state
+const panKeys = { w: false, a: false, s: false, d: false };
+window.addEventListener("keydown", (e: KeyboardEvent) => {
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  if (e.key === "w") panKeys.w = true;
+  if (e.key === "a") panKeys.a = true;
+  if (e.key === "s") panKeys.s = true;
+  if (e.key === "d") panKeys.d = true;
+});
+window.addEventListener("keyup", (e: KeyboardEvent) => {
+  if (e.key === "w") panKeys.w = false;
+  if (e.key === "a") panKeys.a = false;
+  if (e.key === "s") panKeys.s = false;
+  if (e.key === "d") panKeys.d = false;
+});
+
 function animate(): void {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
 
+  // WASD panning — move camera target along ground plane
+  const panSpeed = 800 * dt; // meters per second
+  const forward = new THREE.Vector3();
+  camera.getWorldDirection(forward);
+  forward.y = 0;
+  forward.normalize();
+  const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+  const panDelta = new THREE.Vector3();
+  if (panKeys.w) panDelta.add(forward.clone().multiplyScalar(panSpeed));
+  if (panKeys.s) panDelta.add(forward.clone().multiplyScalar(-panSpeed));
+  if (panKeys.d) panDelta.add(right.clone().multiplyScalar(panSpeed));
+  if (panKeys.a) panDelta.add(right.clone().multiplyScalar(-panSpeed));
+  if (panDelta.lengthSq() > 0) {
+    controls.target.add(panDelta);
+    camera.position.add(panDelta);
+  }
+
   // Update renderers from latest state
   if (latestState) {
     droneRenderer.update(latestState.drones, dt);
-    fogRenderer.updateFromRLE(latestState.fog_grid);
+    if (latestState.fog_grid) {
+      // Lazy-init fog renderer once we have both world size and fog grid dimensions
+      if (worldSize > 0 && !fogRenderer.isInitialized()) {
+        fogRenderer.initialize(worldSize, worldSize, latestState.fog_grid.width, latestState.fog_grid.height);
+      }
+      fogRenderer.updateFromRLE(latestState.fog_grid);
+    }
     overlayRenderer.update(latestState.drones, latestState.comms_links, latestState.survivors, dt);
+    godMode.update(latestState.all_survivors, dt);
+    minimap.update(latestState.drones, latestState.all_survivors);
     interaction.update(latestState.drones);
     updateHUD(latestState);
   }
@@ -342,8 +486,15 @@ function togglePause(): void {
 function resetSim(): void {
   paused = false;
   document.getElementById("btn-pause")!.textContent = "Pause";
+  // Clear ALL visual state so user sees the reset
+  latestState = null;
+  firstChunkReceived = false;
+  cameraCentered = false;
+  clearHazardMeshes();
+  terrainRenderer.dispose();
+  fogRenderer.dispose();
   client.sendSimControl("reset");
-  console.log("[DroneSwarm] Reset requested — new terrain incoming");
+  console.log("[DroneSwarm] Reset requested — clearing scene, new terrain incoming");
 }
 
 // Button listeners
@@ -386,8 +537,23 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
     resetSim();
   } else if (e.key === "t" || e.key === "T") {
     chatPanel.toggle();
+  } else if (e.key === "g" || e.key === "G") {
+    godMode.toggle();
+    fogRenderer.setVisible(!godMode.isActive());
+  } else if (e.key === "?" || e.key === "F1") {
+    e.preventDefault();
+    helpOverlay.toggle();
   }
 });
+
+// Expose debug hooks for visual testing
+(window as unknown as Record<string, unknown>).__DEBUG = {
+  camera,
+  controls,
+  scene,
+  godMode,
+  getState: () => latestState,
+};
 
 console.log("[DroneSwarm] Frontend initialized — connecting to backend...");
 console.log("[DroneSwarm] Controls: Space=pause, 1/2/3=speed, N=new sim, T=chat");

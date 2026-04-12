@@ -16,6 +16,7 @@ import type { DroneState } from "@/network/types";
 const SENSOR_RANGE = 40;
 const TRAIL_LENGTH = 30;
 const LERP_RATE = 10; // positions converge at ~10/sec
+const DRONE_SCALE = 8; // scale factor for visibility in large (10km) worlds
 
 const STATUS_COLORS: Record<DroneState["status"], THREE.Color> = {
   active: new THREE.Color(0x44ff44),
@@ -191,7 +192,7 @@ export class DroneRenderer {
       }
 
       // --- Instance matrix ---
-      const scale = drone.status === "failed" ? 0.5 : 1.0;
+      const scale = (drone.status === "failed" ? 0.5 : 1.0) * DRONE_SCALE;
       _quat.setFromAxisAngle(_axisY, drone.heading);
       _scale.set(scale, scale, scale);
       _mat4.compose(slot.rendered, _quat, _scale);
