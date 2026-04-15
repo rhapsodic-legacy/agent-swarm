@@ -280,7 +280,7 @@ async def _handle_chat(websocket: WebSocket, message: str) -> None:
 
 async def simulation_loop() -> None:
     """Main simulation loop — runs as a background async task."""
-    global pending_commands, sim_reset_requested, current_world, pending_reset_config
+    global pending_commands, sim_reset_requested, current_world, pending_reset_config, sim_config
 
     logger.info("Initializing chunked world (%dm, %dm chunks)...",
                 chunked_config.world_size, chunked_config.chunk_size)
