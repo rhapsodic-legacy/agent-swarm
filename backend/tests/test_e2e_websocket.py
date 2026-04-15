@@ -176,6 +176,16 @@ async def test_full_e2e_pipeline(server):
     print(f"[CHECK] Survivors near base: {len(base_survivors)}, remote: {remote_survivors}")
     assert remote_survivors > 0, "All survivors are at the base — they should be scattered away"
 
+    # 11. All survivors must be within world bounds (0 to world_size)
+    out_of_bounds = [s for s in all_survivors
+                     if s['position'][0] < 0 or s['position'][0] > world_size
+                     or s['position'][2] < 0 or s['position'][2] > world_size]
+    print(f"[CHECK] Out of world bounds: {len(out_of_bounds)}")
+    assert len(out_of_bounds) == 0, (
+        f"{len(out_of_bounds)} survivors outside world bounds! "
+        f"First: {out_of_bounds[0] if out_of_bounds else 'N/A'}"
+    )
+
     # 9. Coverage
     coverage = last.get("coverage_pct", 0)
     print(f"[OK] Coverage: {coverage}%")

@@ -142,12 +142,34 @@ class TestSurvivorPlacement:
         """Survivor positions must be within world bounds."""
         cw, _, _ = _make_chunked_world()
         ws = cw.get_world_size()
+        cs = cw.get_chunk_size()
         for cz in range(min(cw._chunks_z, 3)):
             for cx in range(min(cw._chunks_x, 3)):
                 chunk = cw.get_chunk(ChunkCoord(cx, cz))
                 for s in chunk.survivors:
                     assert 0 <= s.position.x < ws, f"Survivor {s.id} x={s.position.x} out of bounds"
                     assert 0 <= s.position.z < ws, f"Survivor {s.id} z={s.position.z} out of bounds"
+
+    def test_survivors_are_within_their_chunk(self):
+        """Each survivor must be within the bounds of the chunk that contains it."""
+        cw, _, _ = _make_chunked_world()
+        cs = cw.get_chunk_size()
+        for cz in range(cw._chunks_z):
+            for cx in range(cw._chunks_x):
+                chunk = cw.get_chunk(ChunkCoord(cx, cz))
+                x_min = cx * cs
+                x_max = (cx + 1) * cs
+                z_min = cz * cs
+                z_max = (cz + 1) * cs
+                for s in chunk.survivors:
+                    assert x_min <= s.position.x < x_max, (
+                        f"Survivor {s.id} x={s.position.x:.0f} outside chunk ({cx},{cz}) "
+                        f"bounds [{x_min}, {x_max})"
+                    )
+                    assert z_min <= s.position.z < z_max, (
+                        f"Survivor {s.id} z={s.position.z:.0f} outside chunk ({cx},{cz}) "
+                        f"bounds [{z_min}, {z_max})"
+                    )
 
 
 # ---------------------------------------------------------------------------

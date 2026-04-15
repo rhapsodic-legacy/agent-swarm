@@ -456,7 +456,17 @@ function animate(now: number = 0): void {
       fogRenderer.updateFromRLE(latestState.fog_grid);
     }
     overlayRenderer.update(latestState.drones, latestState.comms_links, latestState.survivors, dt);
-    godMode.update(latestState.all_survivors, dt);
+    // Only show god mode survivors on loaded terrain chunks
+    const chunkSz = (latestState as unknown as Record<string, unknown>).chunk_size as number | undefined;
+    const visibleSurvivors = chunkSz && latestState.all_survivors
+      ? latestState.all_survivors.filter((s) =>
+          terrainRenderer.hasChunk(
+            Math.floor(s.position[0] / chunkSz),
+            Math.floor(s.position[2] / chunkSz),
+          ),
+        )
+      : latestState.all_survivors;
+    godMode.update(visibleSurvivors, dt);
     minimap.update(latestState.drones, latestState.all_survivors);
     interaction.update(latestState.drones);
     updateHUD(latestState);
