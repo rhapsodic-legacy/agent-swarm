@@ -338,9 +338,9 @@ async def simulation_loop() -> None:
     replay = ReplayRecorder(record_interval=5)
     replay.start()
 
-    # Pre-generate chunks near base so the first tick isn't blocked
+    # Pre-generate only the 4 chunks directly around the base (not 18)
     logger.info("Pre-generating chunks near base...")
-    base_chunks = chunked_world.get_chunks_near(base.x, base.z, 3072.0)
+    base_chunks = chunked_world.get_chunks_near(base.x, base.z, 1200.0)
     logger.info("Pre-generated %d chunks near base", len(base_chunks))
 
     logger.info(

@@ -175,7 +175,7 @@ class WorldState:
     # Base position for drone resupply
     base_position: Vec3 = Vec3(0.0, 0.0, 0.0)
     # Simulation config
-    tick_rate: float = 20.0  # Hz
+    tick_rate: float = 10.0  # Hz — lower CPU usage
 
 
 @dataclass(frozen=True)
@@ -186,7 +186,7 @@ class SimConfig:
     terrain_seed: int = 42
     max_elevation: float = 200.0
     drone_count: int = 20
-    tick_rate: float = 20.0
+    tick_rate: float = 10.0
     survivor_count: int = 15
     # Drone physics
     drone_max_speed: float = 15.0  # m/s

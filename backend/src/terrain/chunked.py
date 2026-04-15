@@ -26,7 +26,7 @@ from src.simulation.types import Biome, SimConfig, Survivor, Vec3
 # systems produce identical elevation values at matching world coordinates.
 # ---------------------------------------------------------------------------
 
-_OCTAVES = 4  # Balanced detail vs. generation speed for 1024x1024 chunks
+_OCTAVES = 3  # Fewer octaves = faster chunk generation, less CPU heat
 _LACUNARITY = 2.0
 _PERSISTENCE = 0.5
 _BASE_SCALE = 0.005

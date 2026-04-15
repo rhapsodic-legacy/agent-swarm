@@ -416,8 +416,16 @@ window.addEventListener("keyup", (e: KeyboardEvent) => {
   if (e.key === "d") panKeys.d = false;
 });
 
-function animate(): void {
+let lastFrameTime = 0;
+const FRAME_INTERVAL = 1000 / 30; // Cap at 30fps to reduce CPU/GPU load
+
+function animate(now: number = 0): void {
   requestAnimationFrame(animate);
+
+  // Throttle to 30fps
+  if (now - lastFrameTime < FRAME_INTERVAL) return;
+  lastFrameTime = now;
+
   const dt = clock.getDelta();
 
   // WASD panning — move camera target along ground plane
