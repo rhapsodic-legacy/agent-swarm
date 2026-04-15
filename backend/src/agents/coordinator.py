@@ -277,54 +277,59 @@ class SwarmCoordinator:
         return None
 
     def _assign_zones(self, world: WorldState) -> None:
-        """Divide terrain into zones, one per active drone.
+        """Assign each drone a sector sweep radiating outward from base.
 
-        For large chunked worlds (>2048m), limits initial zone assignment to
-        a search area around the base rather than the entire world. The search
-        area expands as coverage increases.
+        Uses expanding sector (pie-slice) assignment instead of rectangular
+        grid zones. Each drone gets an angular sector and sweeps outward from
+        the base in concentric arcs — like a real SAR expanding square/sector
+        search from a command post.
         """
+        import math
+
         active_drones = [d for d in world.drones if d.status == DroneStatus.ACTIVE]
         if not active_drones:
             return
 
         tw = world.terrain.width
         th = world.terrain.height
+        base_x = world.base_position.x
+        base_z = world.base_position.z
+        n = len(active_drones)
 
-        # For massive worlds, limit initial zone area to near base
-        if tw > 2048 or th > 2048:
-            base_x = int(world.base_position.x)
-            base_z = int(world.base_position.z)
-            # Start with a 3km radius, expand as coverage increases
-            radius = min(tw // 2, 3072 + int(self._get_coverage(world.fog_grid) * 50))
-            zone_x_min = max(0, base_x - radius)
-            zone_x_max = min(tw, base_x + radius)
-            zone_z_min = max(0, base_z - radius)
-            zone_z_max = min(th, base_z + radius)
-            zone_w = zone_x_max - zone_x_min
-            zone_h = zone_z_max - zone_z_min
-        else:
-            zone_x_min = 0
-            zone_z_min = 0
-            zone_w = tw
-            zone_h = th
+        # Each drone gets an equal angular sector
+        sector_angle = 2.0 * math.pi / n
 
-        zones = assign_zones(len(active_drones), zone_w, zone_h)
+        # Initial sweep radius: start close, expand as coverage grows
+        coverage = self._get_coverage(world.fog_grid)
+        sweep_radius = 500 + coverage * 80  # 500m initial → ~8500m at full coverage
 
-        for drone, zone in zip(active_drones, zones, strict=False):
+        for i, drone in enumerate(active_drones):
             agent = self.agents[drone.id]
-            # Offset zone to world coordinates
-            (r_min, c_min), (r_max, c_max) = zone
-            r_min += zone_z_min
-            r_max += zone_z_min
-            c_min += zone_x_min
-            c_max += zone_x_min
-            agent.zone = ((r_min, c_min), (r_max, c_max))
+
+            # Sector center angle for this drone
+            angle = i * sector_angle
+
+            # Target: point along the sector centerline at the current sweep radius
+            target_x = base_x + math.cos(angle) * sweep_radius
+            target_z = base_z + math.sin(angle) * sweep_radius
+
+            # Clamp to world bounds
+            target_x = max(50.0, min(float(tw - 50), target_x))
+            target_z = max(50.0, min(float(th - 50), target_z))
+
+            # Assign a zone that covers this sector (rough bounding box)
+            half_arc = sweep_radius * math.sin(sector_angle / 2)
+            zone_r_min = int(max(0, target_z - half_arc))
+            zone_r_max = int(min(th, target_z + half_arc))
+            zone_c_min = int(max(0, target_x - half_arc))
+            zone_c_max = int(min(tw, target_x + half_arc))
+            agent.zone = ((zone_r_min, zone_c_min), (zone_r_max, zone_c_max))
+
             agent.task = DroneTask.MOVING_TO_ZONE
-            # Target: center of assigned zone
-            center_r = min((r_min + r_max) // 2, th - 1)
-            center_c = min((c_min + c_max) // 2, tw - 1)
-            elev = float(world.terrain.heightmap[center_r][center_c])
-            agent.current_target = Vec3(float(center_c), elev, float(center_r))
+            row = int(min(target_z, th - 1))
+            col = int(min(target_x, tw - 1))
+            elev = float(world.terrain.heightmap[row][col])
+            agent.current_target = Vec3(target_x, elev, target_z)
 
     def _update_phase(self, coverage: float) -> None:
         """Transition between mission phases based on coverage."""

@@ -342,41 +342,83 @@ class ChunkedWorld:
         self._chunks_x = math.ceil(world_size / chunk_size)
         self._chunks_z = math.ceil(world_size / chunk_size)
 
-        # Survivor clusters: scattered across the world. Some near enough to the
-        # base that drones will find them quickly, others far away requiring
-        # real strategy. Base is at ~15% of world_size.
+        # Survivor placement modeled on real SAR scenarios:
+        #
+        # Scenario: Small aircraft crash in mountainous/forested terrain.
+        #   - Impact site: tight cluster of survivors (injured, near wreckage)
+        #   - Debris field: linear scatter along crash trajectory (~1-2km)
+        #   - Ejected/walked away: sparse survivors who left the crash site,
+        #     following ridges, streams, or trails seeking help
+        #   - Unrelated: 1-2 lost hikers elsewhere (independent of crash)
+        #
+        # This creates a search problem where the swarm must:
+        #   1. Find the crash site (concentrated signatures)
+        #   2. Sweep the debris field (linear pattern)
+        #   3. Search outward for wanderers (expanding search)
+        #   4. Cover remote areas for unrelated missing persons
         rng = np.random.default_rng(seed + 999)
         base_x = world_size * 0.15
         base_z = world_size * 0.15
+
+        # Crash site: 2-4km from base in a random direction
+        crash_angle = float(rng.uniform(0, 2 * math.pi))
+        crash_dist = float(rng.uniform(0.2, 0.4)) * world_size
+        crash_x = base_x + math.cos(crash_angle) * crash_dist
+        crash_z = base_z + math.sin(crash_angle) * crash_dist
+        crash_x = max(world_size * 0.08, min(world_size * 0.92, crash_x))
+        crash_z = max(world_size * 0.08, min(world_size * 0.92, crash_z))
+
         self._survivor_clusters: list[tuple[float, float, float, float]] = []
-        # Near cluster: 1-2km from base — drones reach this in ~2 minutes
+
+        # 1. Impact site: tight cluster, 40% of survivors (injured, near wreckage)
         self._survivor_clusters.append((
-            base_x + float(rng.uniform(800, 1500)),
-            base_z + float(rng.uniform(800, 1500)),
-            world_size * 0.06,  # ~600m radius
-            0.3,  # 30% of survivors here
+            crash_x, crash_z,
+            150.0,  # 150m radius — tight crash site
+            0.40,
         ))
-        # Mid-range clusters: 3-5km from base
-        for _ in range(2):
-            angle = float(rng.uniform(0, 2 * math.pi))
-            dist = float(rng.uniform(0.3, 0.5)) * world_size
-            cx = base_x + math.cos(angle) * dist
-            cz = base_z + math.sin(angle) * dist
-            cx = max(world_size * 0.1, min(world_size * 0.9, cx))
-            cz = max(world_size * 0.1, min(world_size * 0.9, cz))
+
+        # 2. Debris field: elongated scatter along crash trajectory
+        #    2-3 smaller clusters along the approach vector
+        debris_angle = crash_angle + math.pi + float(rng.uniform(-0.3, 0.3))
+        for i in range(3):
+            offset = 300 + i * 400  # 300m, 700m, 1100m along debris path
+            dx = crash_x + math.cos(debris_angle) * offset
+            dz = crash_z + math.sin(debris_angle) * offset
+            dx = max(50.0, min(world_size - 50.0, dx))
+            dz = max(50.0, min(world_size - 50.0, dz))
             self._survivor_clusters.append((
-                cx, cz,
-                world_size * 0.08,
-                0.2,
+                dx, dz,
+                100.0 + i * 30,  # widening debris scatter
+                0.08,  # 8% each = 24% total in debris field
             ))
-        # Far clusters: 6-9km from base — hard to reach, battery critical
-        for _ in range(2):
-            cx = float(rng.uniform(0.6, 0.9)) * world_size
-            cz = float(rng.uniform(0.6, 0.9)) * world_size
+
+        # 3. Walked-away survivors: people who left crash site seeking help
+        #    Sparse, along natural movement directions (downhill, toward roads)
+        for i in range(2):
+            walk_angle = crash_angle + float(rng.uniform(-1.0, 1.0))
+            walk_dist = float(rng.uniform(800, 2500))
+            wx = crash_x + math.cos(walk_angle) * walk_dist
+            wz = crash_z + math.sin(walk_angle) * walk_dist
+            wx = max(50.0, min(world_size - 50.0, wx))
+            wz = max(50.0, min(world_size - 50.0, wz))
             self._survivor_clusters.append((
-                cx, cz,
-                world_size * 0.06,
-                0.15,
+                wx, wz,
+                300.0,  # wider scatter — they wandered
+                0.08,  # 8% each = 16% walked away
+            ))
+
+        # 4. Unrelated lost hikers: independent of crash, elsewhere on map
+        for _ in range(2):
+            hx = float(rng.uniform(0.15, 0.85)) * world_size
+            hz = float(rng.uniform(0.15, 0.85)) * world_size
+            # Ensure they're not near the crash site
+            while math.sqrt((hx - crash_x) ** 2 + (hz - crash_z) ** 2) < 2000:
+                hx = float(rng.uniform(0.15, 0.85)) * world_size
+                hz = float(rng.uniform(0.15, 0.85)) * world_size
+            self._survivor_clusters.append((
+                hx, hz,
+                50.0,  # very tight — single person
+                0.05,  # 5% each = 10% unrelated
             ))
 
         # Noise generators — shared across all chunks for seamless edges.
@@ -464,20 +506,25 @@ class ChunkedWorld:
         heightmap = norm_elev * self._config.max_elevation
         biome_map = _classify_biomes(norm_elev, norm_moist)
 
-        # Survivors: sum contributions from all clusters
-        chunk_center_x = coord.cx * cs + cs / 2.0
-        chunk_center_z = coord.cz * cs + cs / 2.0
+        # Survivors: sum contributions from all clusters.
+        # Use distance from cluster center to nearest point in chunk (not chunk center)
+        # so small clusters inside large chunks are detected.
+        chunk_x_min = coord.cx * cs
+        chunk_x_max = chunk_x_min + cs
+        chunk_z_min = coord.cz * cs
+        chunk_z_max = chunk_z_min + cs
         survivors_for_chunk = 0
         for cl_x, cl_z, cl_r, cl_weight in self._survivor_clusters:
-            dx = chunk_center_x - cl_x
-            dz = chunk_center_z - cl_z
-            dist = math.sqrt(dx * dx + dz * dz)
+            # Distance from cluster center to nearest point in chunk AABB
+            nearest_x = max(chunk_x_min, min(chunk_x_max, cl_x))
+            nearest_z = max(chunk_z_min, min(chunk_z_max, cl_z))
+            dist = math.sqrt((nearest_x - cl_x) ** 2 + (nearest_z - cl_z) ** 2)
             if dist < cl_r:
-                falloff = math.exp(-(dist ** 2) / (2.0 * (cl_r / 2.5) ** 2))
+                falloff = math.exp(-(dist ** 2) / (2.0 * max(cl_r / 2.5, 1.0) ** 2))
                 survivors_for_chunk += max(1, round(
                     self._config.survivor_count * cl_weight * falloff
                 ))
-            elif dist < cl_r * 1.5:
+            elif dist < cl_r * 2.0:
                 survivors_for_chunk += 1 if (coord.cx + coord.cz) % 3 == 0 else 0
 
         survivors = _place_chunk_survivors(
@@ -697,19 +744,22 @@ class ChunkedWorld:
                     all_survivors.extend(self._cache[coord].survivors)
                 else:
                     # Compute survivor count from cluster distances
-                    chunk_center_x = cx * cs + cs / 2.0
-                    chunk_center_z = cz * cs + cs / 2.0
+                    # Use nearest-point-in-chunk distance (not chunk center)
+                    chunk_x_min = cx * cs
+                    chunk_x_max = chunk_x_min + cs
+                    chunk_z_min = cz * cs
+                    chunk_z_max = chunk_z_min + cs
                     survivors_for_chunk = 0
                     for cl_x, cl_z, cl_r, cl_weight in self._survivor_clusters:
-                        dx_ = chunk_center_x - cl_x
-                        dz_ = chunk_center_z - cl_z
-                        dist = math.sqrt(dx_ * dx_ + dz_ * dz_)
+                        nearest_x = max(chunk_x_min, min(chunk_x_max, cl_x))
+                        nearest_z = max(chunk_z_min, min(chunk_z_max, cl_z))
+                        dist = math.sqrt((nearest_x - cl_x) ** 2 + (nearest_z - cl_z) ** 2)
                         if dist < cl_r:
-                            falloff = math.exp(-(dist ** 2) / (2.0 * (cl_r / 2.5) ** 2))
+                            falloff = math.exp(-(dist ** 2) / (2.0 * max(cl_r / 2.5, 1.0) ** 2))
                             survivors_for_chunk += max(1, round(
                                 self._config.survivor_count * cl_weight * falloff
                             ))
-                        elif dist < cl_r * 1.5:
+                        elif dist < cl_r * 2.0:
                             survivors_for_chunk += 1 if (cx + cz) % 3 == 0 else 0
 
                     if survivors_for_chunk > 0:
