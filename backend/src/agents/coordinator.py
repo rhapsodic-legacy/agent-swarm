@@ -423,7 +423,10 @@ class SwarmCoordinator:
             poc_target = self._poc_target(drone, agent, world)
             if poc_target is not None:
                 return poc_target
-            # If no hot cells found, fall through to legacy
+            # No reachable hot cell (likely low battery or far from hotspots).
+            # Return to base rather than picking an unreachable target.
+            agent.task = DroneTask.RETURNING_TO_BASE
+            return world.base_position
 
         fog_grid = world.fog_grid
         terrain = world.terrain
@@ -453,42 +456,117 @@ class SwarmCoordinator:
         return None
 
     def _poc_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
-        """Select a target based on the Probability of Containment grid.
+        """Select a target from DIVERSE hotspots (NMS-sampled).
 
-        For each drone, find the highest-PoC cell that isn't already claimed
-        by another drone this tick. Greedy nearest-hot-cell assignment maximizes
-        expected PoS (PoC × PoD / travel_distance).
+        Instead of picking the top-N hottest cells (which all cluster around
+        the dominant peak), we use non-maximum suppression to get one hotspot
+        per cluster region. Then each drone picks the closest free hotspot.
+
+        This produces real search-theory behavior: drones fan out across
+        ALL high-probability regions simultaneously, not just the biggest one.
         """
         import math
         from src.simulation.search_map import SearchMap
 
         sm: SearchMap = world.search_map  # type: ignore[assignment]
-        # Cache the top-N hottest cells per tick (across all drones).
+
+        # Hotspot separation: for N drones in W×W world, ideal spacing is
+        # W/sqrt(N). 20 drones in 10km → ~2300m. Separation should be smaller
+        # so we have more than N hotspots (allowing drones choice), but big
+        # enough that adjacent candidates are from different clusters.
+        world_size = max(world.terrain.width, world.terrain.height)
+        active_count = max(sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE), 1)
+        hotspot_separation = 0.4 * (world_size / math.sqrt(active_count))
+
+        # Cache diverse hotspots per tick. n = 2*active so each drone has
+        # options even after claims.
         if self._poc_cache_tick != world.tick:
-            active = sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE)
-            n_candidates = max(active * 3, 20)  # 3 candidates per drone, min 20
-            self._poc_hottest = sm.hottest_cells(n_candidates)
+            n_spots = active_count * 2 + 5
+            self._poc_hottest = sm.diverse_hotspots(
+                n_spots, min_separation_meters=hotspot_separation,
+            )
             self._poc_claimed = set()
             self._poc_cache_tick = world.tick
 
-        # Find the best unclaimed hot cell by distance-weighted expected PoS.
+        # Collect other drones' active targets — avoid picking their target.
+        other_targets: list[tuple[float, float]] = []
+        for d in world.drones:
+            if d.id == drone.id or d.status != DroneStatus.ACTIVE:
+                continue
+            other_agent = self.agents.get(d.id)
+            if other_agent is not None and other_agent.current_target is not None:
+                other_targets.append(
+                    (other_agent.current_target.x, other_agent.current_target.z)
+                )
+
+        # Safety: compute max total flight distance from current battery.
+        # Measured actual drain: 0.58%/s = 4.83× base — use 5× for margin.
+        speed_est = drone.max_speed * 0.85
+        drain_est = self.config.drone_battery_drain_rate * 5.0  # %/s
+        available_battery = max(drone.battery - 10.0, 0.0)
+        max_flight_time = available_battery / max(drain_est, 0.01)
+        max_range_meters = speed_est * max_flight_time
+        # Round-trip: target must be at most half the range from CURRENT position
+        # PLUS at most that much from the base.
+        base_x, base_z = world.base_position.x, world.base_position.z
+
+        # Pick the closest non-claimed, non-other-drone hotspot.
         best_cell = None
         best_score = -math.inf
         for col, row, poc_val in self._poc_hottest:
-            if (col, row) in self._poc_claimed:
-                continue
             if poc_val <= 0.0:
                 continue
+            if (col, row) in self._poc_claimed:
+                continue
             tx, tz = sm.cell_to_world(col, row)
-            dx = drone.position.x - tx
-            dz = drone.position.z - tz
-            dist = max(math.sqrt(dx * dx + dz * dz), 1.0)
-            # Expected PoS per meter of travel — what Koopman's theory says to
-            # optimize. PoC × (approximate PoD) / travel_cost.
+
+            # Range check: can the drone reach this target AND return to base?
+            dist_to_target = math.sqrt(
+                (drone.position.x - tx) ** 2 + (drone.position.z - tz) ** 2
+            )
+            dist_target_to_base = math.sqrt((tx - base_x) ** 2 + (tz - base_z) ** 2)
+            if dist_to_target + dist_target_to_base > max_range_meters:
+                continue  # can't safely reach + return
+
+            # Skip hotspots any other drone is already targeting
+            claimed_by_other = False
+            for (ox, oz) in other_targets:
+                if math.sqrt((tx - ox) ** 2 + (tz - oz) ** 2) < hotspot_separation * 0.5:
+                    claimed_by_other = True
+                    break
+            if claimed_by_other:
+                continue
+
+            dist = max(dist_to_target, 1.0)
+
+            # Score: prefer high PoC per unit distance
             score = poc_val / dist
             if score > best_score:
                 best_score = score
                 best_cell = (col, row)
+
+        # Fallback: if all diverse hotspots are unreachable OR taken by others,
+        # pick any unclaimed one — but STILL enforce range (never commit to
+        # a target the drone can't survive). If no reachable target exists,
+        # the drone will return nothing and the caller will RTB.
+        if best_cell is None:
+            for col, row, poc_val in self._poc_hottest:
+                if (col, row) in self._poc_claimed or poc_val <= 0.0:
+                    continue
+                tx, tz = sm.cell_to_world(col, row)
+                dist_to_target = math.sqrt(
+                    (drone.position.x - tx) ** 2 + (drone.position.z - tz) ** 2
+                )
+                dist_target_to_base = math.sqrt(
+                    (tx - base_x) ** 2 + (tz - base_z) ** 2
+                )
+                if dist_to_target + dist_target_to_base > max_range_meters:
+                    continue
+                dist = max(dist_to_target, 1.0)
+                score = poc_val / dist
+                if score > best_score:
+                    best_score = score
+                    best_cell = (col, row)
 
         if best_cell is None:
             return None
@@ -659,23 +737,24 @@ class SwarmCoordinator:
     def _should_return_for_fuel(self, drone: Drone, world: WorldState) -> bool:
         """Proactively return a drone if it won't have enough battery to get back.
 
-        Estimates flight time to base based on distance and speed, then adds a
-        safety margin. Returns True if the drone should head home now.
+        Actual drain rate at typical search flight is base × speed_mult × alt_mult
+        × sensor_mult ≈ 0.12 × 1.75 × 1.25 × 1.2 = 0.315%/s, which is 2.6x the
+        base rate. The estimate here uses 3x base as a conservative safety factor.
         """
         dist_to_base = (drone.position - world.base_position).length_xz()
         if dist_to_base < 10.0:
             return False  # already near base
 
-        # Estimate time to return: distance / speed (conservative)
-        speed = max(drone.max_speed * 0.6, 1.0)
+        # MEASURED actual drain during typical flight is ~0.58%/s for
+        # base_drain=0.12 — i.e. 4.83× the base rate (altitude + acceleration
+        # + sensor + velocity multipliers compound). Use 5× as safety.
+        speed = max(drone.max_speed * 0.75, 1.0)  # effective ground speed
         time_to_base = dist_to_base / speed
-
-        # Estimate battery drain for the return trip
-        drain_rate = self.config.drone_battery_drain_rate * 1.5  # 1.5x safety factor
+        drain_rate = self.config.drone_battery_drain_rate * 5.0
         battery_needed = drain_rate * time_to_base
 
-        # Safety margin: 15% buffer so drones return well before critical
-        return drone.battery < (battery_needed + 15.0)
+        # 10% reserve for queuing at base + minor detours
+        return drone.battery < (battery_needed + 10.0)
 
     def _get_coverage(self, fog_grid: np.ndarray) -> float:
         """Calculate exploration coverage percentage."""

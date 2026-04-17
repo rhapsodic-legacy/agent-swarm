@@ -266,6 +266,56 @@ class SearchMap:
             results.append((col, row, val))
         return results
 
+    def diverse_hotspots(
+        self,
+        n: int,
+        min_separation_meters: float,
+    ) -> list[tuple[int, int, float]]:
+        """Return up to n hotspots with minimum geographic separation.
+
+        Uses non-maximum suppression: pick the hottest cell, blacklist all
+        cells within min_separation, pick next-hottest remaining, repeat.
+        This gives drones targets from DIFFERENT clusters instead of N targets
+        all from the same hotspot.
+
+        Returns list of (col, row, poc_value), sorted by value descending.
+        """
+        if n <= 0 or self.poc.size == 0:
+            return []
+
+        sep_cells = max(1, int(min_separation_meters / self.cell_size))
+        sep_sq = sep_cells * sep_cells
+
+        # Copy poc so we can zero-out regions during NMS
+        working = self.poc.copy()
+        rows, cols = working.shape
+        result: list[tuple[int, int, float]] = []
+
+        for _ in range(n):
+            if working.size == 0:
+                break
+            flat_idx = int(working.argmax())
+            val = float(working.flat[flat_idx])
+            if val <= 0.0:
+                break
+            row = flat_idx // cols
+            col = flat_idx % cols
+            result.append((col, row, val))
+
+            # Zero out a box around this hotspot (cheaper than circle, close enough)
+            r_min = max(0, row - sep_cells)
+            r_max = min(rows, row + sep_cells + 1)
+            c_min = max(0, col - sep_cells)
+            c_max = min(cols, col + sep_cells + 1)
+            rr = np.arange(r_min, r_max)[:, None]
+            cc = np.arange(c_min, c_max)[None, :]
+            mask = (rr - row) ** 2 + (cc - col) ** 2 <= sep_sq
+            working[r_min:r_max, c_min:c_max] = np.where(
+                mask, np.float32(0.0), working[r_min:r_max, c_min:c_max]
+            )
+
+        return result
+
     def downsample(self, target_size: int) -> np.ndarray:
         """Return a downsampled view for serialization to frontend.
 

@@ -266,6 +266,10 @@ def run_sim(
     per_drone_distance: dict[int, float] = {d.id: 0.0 for d in drones}
     per_drone_discoveries: dict[int, int] = {d.id: 0 for d in drones}
     last_positions: dict[int, Vec3] = {d.id: d.position for d in drones}
+    # Track cumulative discoveries (survivor ids) — world.survivors only has
+    # active-chunk survivors at any moment, so it loses discovered survivors
+    # when drones leave the area.
+    discovered_ids: set[int] = set()
 
     sim_start = time.monotonic()
     seen_events: set[tuple[int, int]] = set()  # (tick, survivor_id) dedup
@@ -307,13 +311,14 @@ def run_sim(
                     )
                     report.total_discoveries.append(evt)
                     per_drone_discoveries[ev.drone_id] = per_drone_discoveries.get(ev.drone_id, 0) + 1
+                    discovered_ids.add(ev.survivor_id)
 
                     if report.time_to_first_discovery_s is None:
                         report.time_to_first_discovery_s = world.elapsed
 
         # Snapshots at interval
         if world.tick % snapshot_tick_interval == 0:
-            found = sum(1 for s in world.survivors if s.discovered)
+            found = len(discovered_ids)  # cumulative, not current-tick
             # Coverage: fraction of global fog grid explored
             explored = int(np.count_nonzero(world.fog_grid != FOG_UNEXPLORED))
             total_cells = int(world.fog_grid.size)
@@ -361,7 +366,7 @@ def run_sim(
     report.wall_time_s = sim_wall_time
     report.speedup = world.elapsed / max(sim_wall_time, 1e-6)
     report.total_ticks = world.tick
-    report.found_count = sum(1 for s in world.survivors if s.discovered)
+    report.found_count = len(discovered_ids)
     report.per_drone_distance = per_drone_distance
     report.per_drone_discoveries = per_drone_discoveries
 
