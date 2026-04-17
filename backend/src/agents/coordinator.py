@@ -101,6 +101,10 @@ class SwarmCoordinator:
         # Activity log — ring buffer of recent entries for frontend display
         self._activity_log: list[dict] = []
         self._max_log_entries = 200
+        # Per-tick cache for PoC-based target selection
+        self._poc_cache_tick: int = -1
+        self._poc_hottest: list[tuple[int, int, float]] = []
+        self._poc_claimed: set[tuple[int, int]] = set()
 
     def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
         """Append an entry to the activity log ring buffer."""
@@ -404,16 +408,26 @@ class SwarmCoordinator:
     def _pick_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
         """Pick the next target for a drone based on the current mission phase.
 
-        Survivor positions are passed to search functions so drones prioritize
-        unexplored areas near previous discoveries (clustering heuristic).
-        """
-        fog_grid = world.fog_grid
-        terrain = world.terrain
-        surv_pos = self._get_survivor_positions(world)
+        If a Bayesian search map is available, use PoC-based targeting — drones
+        go to the highest-probability unclaimed cells. This is the phase-1
+        Bayesian search dispatcher.
 
+        Otherwise fall back to phase-based legacy (fog + biome) targeting.
+        """
         if self.phase == SearchPhase.COMPLETE:
             agent.task = DroneTask.RETURNING_TO_BASE
             return world.base_position
+
+        # Bayesian PoC-based routing (preferred when search map is available)
+        if world.search_map is not None:
+            poc_target = self._poc_target(drone, agent, world)
+            if poc_target is not None:
+                return poc_target
+            # If no hot cells found, fall through to legacy
+
+        fog_grid = world.fog_grid
+        terrain = world.terrain
+        surv_pos = self._get_survivor_positions(world)
 
         if self.phase == SearchPhase.INITIAL_SPREAD:
             agent.task = DroneTask.MOVING_TO_ZONE
@@ -437,6 +451,60 @@ class SwarmCoordinator:
             return frontier_search(drone.position, fog_grid, terrain, surv_pos)
 
         return None
+
+    def _poc_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
+        """Select a target based on the Probability of Containment grid.
+
+        For each drone, find the highest-PoC cell that isn't already claimed
+        by another drone this tick. Greedy nearest-hot-cell assignment maximizes
+        expected PoS (PoC × PoD / travel_distance).
+        """
+        import math
+        from src.simulation.search_map import SearchMap
+
+        sm: SearchMap = world.search_map  # type: ignore[assignment]
+        # Cache the top-N hottest cells per tick (across all drones).
+        if self._poc_cache_tick != world.tick:
+            active = sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE)
+            n_candidates = max(active * 3, 20)  # 3 candidates per drone, min 20
+            self._poc_hottest = sm.hottest_cells(n_candidates)
+            self._poc_claimed = set()
+            self._poc_cache_tick = world.tick
+
+        # Find the best unclaimed hot cell by distance-weighted expected PoS.
+        best_cell = None
+        best_score = -math.inf
+        for col, row, poc_val in self._poc_hottest:
+            if (col, row) in self._poc_claimed:
+                continue
+            if poc_val <= 0.0:
+                continue
+            tx, tz = sm.cell_to_world(col, row)
+            dx = drone.position.x - tx
+            dz = drone.position.z - tz
+            dist = max(math.sqrt(dx * dx + dz * dz), 1.0)
+            # Expected PoS per meter of travel — what Koopman's theory says to
+            # optimize. PoC × (approximate PoD) / travel_cost.
+            score = poc_val / dist
+            if score > best_score:
+                best_score = score
+                best_cell = (col, row)
+
+        if best_cell is None:
+            return None
+
+        self._poc_claimed.add(best_cell)
+        tx, tz = sm.cell_to_world(*best_cell)
+        # Clamp to world bounds and look up terrain height
+        tw = world.terrain.width
+        th = world.terrain.height
+        tx = max(50.0, min(float(tw - 50), tx))
+        tz = max(50.0, min(float(th - 50), tz))
+        row = int(min(tz, th - 1))
+        col = int(min(tx, tw - 1))
+        elev = float(world.terrain.heightmap[row][col])
+        agent.task = DroneTask.FRONTIER_EXPLORING  # closest existing task to "PoC-seeking"
+        return Vec3(tx, elev, tz)
 
     def _systematic_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
         """Generate waypoints for systematic lawnmower search within zone."""

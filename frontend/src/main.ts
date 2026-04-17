@@ -373,6 +373,8 @@ const minimap = new Minimap();
 const chatPanel = new ChatPanel(client);
 const activityLog = new ActivityLog();
 const godMode = new GodModeOverlay(scene);
+import { PoCHeatmap } from "@/scene/pocHeatmap";
+const pocHeatmap = new PoCHeatmap(scene);
 const helpOverlay = new HelpOverlay();
 const settingsPanel = new SettingsPanel((config: SimSettings) => {
   // Send reset with config to backend
@@ -467,6 +469,8 @@ function animate(now: number = 0): void {
         )
       : latestState.all_survivors;
     godMode.update(visibleSurvivors, dt);
+    // PoC heatmap: only present in state every 10 ticks
+    pocHeatmap.update(latestState.poc_grid);
     minimap.update(latestState.drones, latestState.all_survivors);
     interaction.update(latestState.drones);
     updateHUD(latestState);
@@ -558,6 +562,8 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
   } else if (e.key === "g" || e.key === "G") {
     godMode.toggle();
     fogRenderer.setVisible(!godMode.isActive());
+  } else if (e.key === "h" || e.key === "H") {
+    pocHeatmap.toggle();
   } else if (e.key === "?" || e.key === "F1") {
     e.preventDefault();
     helpOverlay.toggle();

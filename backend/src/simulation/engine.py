@@ -418,6 +418,34 @@ def tick_chunked(
     for chunk in active_chunks:
         _update_chunk_fog(chunk, drones_tuple, config)
 
+    # --- 7b. Bayesian update: Probability of Containment (PoC) ---
+    # For each drone that scanned without finding, decrease PoC in scanned cells.
+    # PoD per drone depends on its sensor, altitude, and biome — we use a
+    # simplified model here and let Phase 4 refine it.
+    search_map = world.search_map
+    if search_map is not None:
+        from src.simulation.search_map import SearchMap
+        sm: SearchMap = search_map  # type: ignore[assignment]
+        for d in drones:
+            if d.status == DroneStatus.FAILED or not d.sensor_active:
+                continue
+            # Skip if the drone just discovered a survivor this tick — that cell
+            # should NOT be PoC-reduced (the target is there, not absent).
+            found_this_tick = any(
+                e.drone_id == d.id and e.type == EventType.SURVIVOR_FOUND
+                for e in events
+            )
+            if found_this_tick:
+                continue
+            # Effective PoD: base sensor efficacy. Phase 4 will compute true
+            # PoD from biome + sensor loadout + weather.
+            base_pod = 0.4
+            sm.update_after_failed_scan(
+                center_world=(d.position.x, d.position.z),
+                radius_meters=d.sensor_range,
+                pod=base_pod,
+            )
+
     # Update the coarse global fog grid (used by agent AI)
     fog_grid = world.fog_grid
     fog_h, fog_w = fog_grid.shape
@@ -476,6 +504,7 @@ def tick_chunked(
         events=tuple(events),
         base_position=world.base_position,
         tick_rate=world.tick_rate,
+        search_map=world.search_map,
     )
 
 

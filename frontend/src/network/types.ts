@@ -81,6 +81,14 @@ export function decodeTerrain(data: TerrainData): DecodedTerrain {
   return { width, height, max_elevation, heightmap, biome_map };
 }
 
+/** Probability-of-Containment grid for Bayesian search overlay. */
+export interface PoCGrid {
+  size: number;          // Grid is size × size
+  world_size: number;    // Total world size in meters
+  peak: number;          // Peak PoC value (pre-quantization)
+  data_b64: string;      // uint8, each cell = byte 0-255 normalized to peak
+}
+
 export interface FogData {
   width: number;
   height: number;
@@ -103,6 +111,8 @@ export interface StateUpdate {
   survivors: SurvivorState[];
   /** All survivors (including undiscovered) — for God Mode debug overlay. */
   all_survivors?: SurvivorState[];
+  /** Probability-of-Containment grid (downsampled, sent every N ticks). */
+  poc_grid?: PoCGrid;
   fog_grid: FogData;
   comms_links: [number, number][];
   events: SimEvent[];

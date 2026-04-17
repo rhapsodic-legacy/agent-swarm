@@ -176,6 +176,10 @@ class WorldState:
     base_position: Vec3 = Vec3(0.0, 0.0, 0.0)
     # Simulation config
     tick_rate: float = 10.0  # Hz — lower CPU usage
+    # Bayesian search map — Probability of Containment per cell.
+    # Optional; None means search-theory-based routing is disabled.
+    # See src/simulation/search_map.py for the SearchMap class.
+    search_map: object = None  # SearchMap | None
 
 
 @dataclass(frozen=True)

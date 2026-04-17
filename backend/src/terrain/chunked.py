@@ -407,14 +407,19 @@ class ChunkedWorld:
                 0.08,  # 8% each = 16% walked away
             ))
 
-        # 4. Unrelated lost hikers: independent of crash, elsewhere on map
+        # 4. Unrelated lost hikers: independent of crash, elsewhere on map.
+        # Separation from crash is proportional to world size so tiny test
+        # configurations don't infinite-loop.
+        min_separation = min(2000.0, world_size * 0.25)
         for _ in range(2):
             hx = float(rng.uniform(0.15, 0.85)) * world_size
             hz = float(rng.uniform(0.15, 0.85)) * world_size
-            # Ensure they're not near the crash site
-            while math.sqrt((hx - crash_x) ** 2 + (hz - crash_z) ** 2) < 2000:
+            attempts = 0
+            while (math.sqrt((hx - crash_x) ** 2 + (hz - crash_z) ** 2)
+                   < min_separation and attempts < 20):
                 hx = float(rng.uniform(0.15, 0.85)) * world_size
                 hz = float(rng.uniform(0.15, 0.85)) * world_size
+                attempts += 1
             self._survivor_clusters.append((
                 hx, hz,
                 50.0,  # very tight — single person

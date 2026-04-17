@@ -314,6 +314,23 @@ async def simulation_loop() -> None:
     fog_res = max(world_size // 10, 256)
     global_fog = np.full((fog_res, fog_res), FOG_UNEXPLORED, dtype=np.int8)
 
+    # Bayesian search map — seeded from the survivor cluster priors in the
+    # ChunkedWorld. Phase 2 will replace this with mission-type priors; for now
+    # we use the ground-truth cluster layout as the "intel" (imperfect).
+    from src.simulation.search_map import SearchMap
+    search_map = SearchMap.empty(world_size=float(world_size), cell_size=40.0)
+    for (cx, cz, cr, cw_weight) in chunked_world._survivor_clusters:
+        # Bias the prior: crash-site cluster sharper, debris field spread,
+        # unrelated hikers very diffuse.
+        search_map.add_gaussian(
+            center_world=(cx, cz),
+            radius_meters=max(cr, 200.0),
+            weight=cw_weight,
+        )
+    # Also add a weak uniform baseline so no cell is truly "zero probability"
+    search_map.poc += np.float32(0.001)
+    search_map.normalize(target_mass=1.0)
+
     world = WorldState(
         tick=0,
         elapsed=0.0,
@@ -325,6 +342,7 @@ async def simulation_loop() -> None:
         events=(),
         base_position=base,
         tick_rate=sim_config.tick_rate,
+        search_map=search_map,
     )
 
     fog_scale = world_size / fog_res  # meters per fog cell
@@ -404,6 +422,16 @@ async def simulation_loop() -> None:
                 seed=new_seed,
             )
             global_fog = np.full((fog_res, fog_res), FOG_UNEXPLORED, dtype=np.int8)
+            # Reset search map with fresh priors
+            search_map = SearchMap.empty(world_size=float(world_size), cell_size=40.0)
+            for (cx, cz, cr, cw_weight) in chunked_world._survivor_clusters:
+                search_map.add_gaussian(
+                    center_world=(cx, cz),
+                    radius_meters=max(cr, 200.0),
+                    weight=cw_weight,
+                )
+            search_map.poc += np.float32(0.001)
+            search_map.normalize(target_mass=1.0)
             world = WorldState(
                 tick=0,
                 elapsed=0.0,
@@ -415,6 +443,7 @@ async def simulation_loop() -> None:
                 events=(),
                 base_position=base,
                 tick_rate=sim_config.tick_rate,
+                search_map=search_map,
             )
             rng = np.random.default_rng(new_seed)
             day_length = float(cfg.get("day_length", 300.0))
@@ -541,6 +570,24 @@ async def simulation_loop() -> None:
                 "world_size": world_size,
                 "chunk_size": chunked_config.chunk_size,
             }
+
+            # PoC heatmap: send every 10 ticks (1 Hz at 10 Hz sim).
+            # 64x64 grid at uint8 = 4KB per broadcast (cheap).
+            if world.tick % 10 == 0 and world.search_map is not None:
+                import base64
+                from src.simulation.search_map import SearchMap
+                sm: SearchMap = world.search_map  # type: ignore[assignment]
+                down = sm.downsample(64)
+                peak = max(float(down.max()), 1e-9)
+                # Quantize to uint8 relative to current peak (preserves
+                # relative hotspot visibility even as absolute mass decreases)
+                arr = np.clip((down / peak) * 255.0, 0, 255).astype(np.uint8)
+                state_msg["poc_grid"] = {
+                    "size": 64,
+                    "world_size": world_size,
+                    "peak": peak,
+                    "data_b64": base64.b64encode(arr.tobytes()).decode("ascii"),
+                }
 
             await broadcast_chunked(state_msg, chunked_world, active_chunks, world, agent_info)
 

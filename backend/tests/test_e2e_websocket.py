@@ -186,6 +186,23 @@ async def test_full_e2e_pipeline(server):
         f"First: {out_of_bounds[0] if out_of_bounds else 'N/A'}"
     )
 
+    # 12. PoC grid should arrive at least once within 30 ticks
+    poc_updates = [s for s in state_updates if s.get("poc_grid")]
+    print(f"[CHECK] state_updates with poc_grid: {len(poc_updates)}")
+    assert len(poc_updates) > 0, (
+        "No poc_grid in any state_update! Bayesian heatmap won't render."
+    )
+    sample = poc_updates[-1]["poc_grid"]
+    print(f"[CHECK] poc_grid size={sample['size']}, peak={sample['peak']:.5f}, "
+          f"data_bytes={len(base64.b64decode(sample['data_b64']))}")
+    assert sample["size"] > 0
+    assert sample["peak"] > 0
+    # Data bytes should equal size * size
+    data_bytes = base64.b64decode(sample["data_b64"])
+    assert len(data_bytes) == sample["size"] * sample["size"], (
+        f"PoC data size mismatch: {len(data_bytes)} vs {sample['size']**2}"
+    )
+
     # 9. Coverage
     coverage = last.get("coverage_pct", 0)
     print(f"[OK] Coverage: {coverage}%")

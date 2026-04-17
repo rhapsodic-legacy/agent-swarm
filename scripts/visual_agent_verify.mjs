@@ -18,6 +18,7 @@
  */
 
 import puppeteer from "puppeteer";
+import { PNG } from "pngjs";
 
 const FRONTEND_URL = "http://localhost:5173";
 
@@ -38,9 +39,11 @@ async function launchPage() {
 }
 
 async function readPixels(page) {
-  return page.evaluate(() => {
+  return page.evaluate(async () => {
     const canvas = document.querySelector("canvas");
     if (!canvas) return null;
+    // Wait for two rAF cycles to ensure the latest frame has rendered
+    await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
     const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
     if (!gl) return null;
     const w = gl.drawingBufferWidth;
@@ -214,6 +217,59 @@ async function survivorAgent(page) {
   };
 }
 
+// ========== AGENT 5: PoC Heatmap (before/after comparison) ==========
+// Ground-truth test: measure saturated-color pixel count before and after
+// the heatmap toggle. A real heatmap must add a clear quantity of saturated
+// (non-terrain, non-sky) pixels.
+function countSaturatedPixelsFromPng(pngBuffer) {
+  const png = PNG.sync.read(pngBuffer);
+  const { width, height, data } = png;
+  let count = 0;
+  // Sample every 4th pixel for speed (width * height * 4 bytes per pixel)
+  for (let i = 0; i < data.length; i += 16) {
+    const r = data[i], g = data[i + 1], b = data[i + 2];
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    if (max > 120 && (max - min) > 60) count++;
+  }
+  return count;
+}
+
+function countSaturatedPixels(pixelData) {
+  const { pixels } = pixelData;
+  let count = 0;
+  for (let i = 0; i < pixels.length; i += 16) {
+    const r = pixels[i], g = pixels[i + 1], b = pixels[i + 2];
+    // Saturated = at least one channel is high AND there's meaningful
+    // separation between the max and min channel (i.e. not gray)
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    if (max > 120 && (max - min) > 60) count++;
+  }
+  return count;
+}
+
+async function heatmapAgent(page, baselineCount) {
+  const data = await readPixels(page);
+  if (!data) return { agent: "poc_heatmap", error: "no pixel data" };
+
+  const withHeatmap = countSaturatedPixels(data);
+  const delta = withHeatmap - baselineCount;
+  // A visible heatmap adds many saturated pixels across the terrain plane.
+  // Threshold: 1000+ new saturated pixels at 1280x720 sampling every 4th.
+  const rendering = delta > 1000;
+
+  return {
+    agent: "poc_heatmap",
+    baselineSaturated: baselineCount,
+    withHeatmapSaturated: withHeatmap,
+    delta,
+    verdict: rendering
+      ? `OK: heatmap adds ${delta} saturated pixels`
+      : `FAIL: heatmap added only ${delta} saturated pixels`,
+  };
+}
+
 // ========== AGENT 4: Scale comparison ==========
 async function scaleAgent(droneReport, survivorReport) {
   const droneAvgH = droneReport.avgBlobHeight || 0;
@@ -272,9 +328,40 @@ async function main() {
     const scaleReport = await scaleAgent(droneReport, survivorReport);
     console.log(JSON.stringify(scaleReport, null, 2));
 
-    // Save screenshot for human inspection
+    console.log("\n--- AGENT 5: PoC Heatmap (Bayesian search overlay) ---");
+    // Press G to turn off god mode first (cleaner reading)
+    await page.keyboard.press("g");
+    await new Promise((r) => setTimeout(r, 1500));
+    // Measure baseline via screenshot (ground truth — pixel data matches what user sees)
+    const baselinePng = await page.screenshot({ type: "png" });
+    const baselineSaturated = countSaturatedPixelsFromPng(baselinePng);
+    // Press H to enable heatmap
+    await page.keyboard.press("h");
+    await new Promise((r) => setTimeout(r, 3000));
+    const heatmapPng = await page.screenshot({ type: "png", path: "/tmp/visual_agent_heatmap.png" });
+    const withHeatmapSaturated = countSaturatedPixelsFromPng(heatmapPng);
+    const heatmapReport = {
+      agent: "poc_heatmap",
+      baselineSaturated,
+      withHeatmapSaturated,
+      delta: withHeatmapSaturated - baselineSaturated,
+      verdict:
+        withHeatmapSaturated - baselineSaturated > 2000
+          ? `OK: heatmap adds ${withHeatmapSaturated - baselineSaturated} saturated pixels`
+          : `FAIL: heatmap added only ${withHeatmapSaturated - baselineSaturated} saturated pixels`,
+    };
+    console.log(JSON.stringify(heatmapReport, null, 2));
+
+    // Save screenshot for human inspection (god off, heatmap on)
+    await page.screenshot({ path: "/tmp/visual_agent_heatmap.png" });
+    console.log("\nHeatmap screenshot: /tmp/visual_agent_heatmap.png");
+
+    // Restore: heatmap off, god on for the main screenshot
+    await page.keyboard.press("h");
+    await page.keyboard.press("g");
+    await new Promise((r) => setTimeout(r, 1000));
     await page.screenshot({ path: "/tmp/visual_agent_verify.png" });
-    console.log("\nScreenshot: /tmp/visual_agent_verify.png");
+    console.log("Main screenshot: /tmp/visual_agent_verify.png");
 
     // Final verdict
     console.log("\n========================================");
