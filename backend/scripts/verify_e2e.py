@@ -6,7 +6,7 @@ have historically broken across the backend→frontend boundary:
 
 1. Fog clears AT drone positions, not elsewhere
 2. Drone positions are near the base at startup
-3. Survivor cluster is away from base
+3. Survivor clusters seeded and reachable for the active mission
 4. Terrain chunks are generated near the base
 5. Fog RLE serialization is spatially correct
 6. State message contains all required fields
@@ -17,25 +17,32 @@ stale-config regressions without needing a browser.
 
 Usage:
     cd backend && uv run python scripts/verify_e2e.py
+    cd backend && uv run python scripts/verify_e2e.py lost_hiker
 """
 
 from __future__ import annotations
 
 import json
 import math
+import os
 import sys
+
+# Make `src.*` importable regardless of cwd (script lives in backend/scripts).
+_BACKEND_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _BACKEND_ROOT not in sys.path:
+    sys.path.insert(0, _BACKEND_ROOT)
 
 import numpy as np
 
 from src.agents.coordinator import SwarmCoordinator
 from src.server.main import _compress_chunk_fog
 from src.simulation.engine import tick_chunked
+from src.simulation.mission import available_missions, build_mission
 from src.simulation.types import (
     FOG_EXPLORED,
     FOG_UNEXPLORED,
     SimConfig,
     Terrain,
-    Vec3,
     WorldState,
 )
 from src.terrain.chunked import ChunkedWorld
@@ -47,7 +54,7 @@ from src.terrain.chunked import ChunkedWorld
 WORLD_SIZE = 10240
 CHUNK_SIZE = 1024
 SEED = 42
-BASE_FRACTION = 0.15  # base at 15% of world size
+DEFAULT_MISSION = "aircraft_crash"
 
 sim_config = SimConfig(
     terrain_size=1024,
@@ -70,13 +77,14 @@ sim_config = SimConfig(
 # ---------------------------------------------------------------------------
 
 
-def setup():
-    """Create world state matching main.py's chunked setup."""
+def setup(mission_name: str = DEFAULT_MISSION):
+    """Create world state matching main.py's mission-driven chunked setup."""
     from src.simulation.drone import create_drone_fleet
 
-    cw = ChunkedWorld(WORLD_SIZE, CHUNK_SIZE, SEED, sim_config)
+    mission = build_mission(mission_name, WORLD_SIZE, SEED)
+    cw = ChunkedWorld(WORLD_SIZE, CHUNK_SIZE, SEED, sim_config, clusters=mission.clusters)
 
-    base = Vec3(WORLD_SIZE * BASE_FRACTION, 0.0, WORLD_SIZE * BASE_FRACTION)
+    base = mission.base_position
     drones = create_drone_fleet(sim_config.drone_count, base, sim_config)
 
     stub_terrain = Terrain(
@@ -105,7 +113,7 @@ def setup():
         tick_rate=sim_config.tick_rate,
     )
 
-    return world, cw, base, fog_res
+    return world, cw, base, fog_res, mission
 
 
 # ---------------------------------------------------------------------------
@@ -126,14 +134,16 @@ def check(name: str, condition: bool, detail: str = ""):
         failures.append(msg)
 
 
-def run_checks():
-    world, cw, base, fog_res = setup()
+def run_checks(mission_name: str = DEFAULT_MISSION):
+    world, cw, base, fog_res, mission = setup(mission_name)
     fog_scale = WORLD_SIZE / fog_res
     dt = 1.0 / sim_config.tick_rate
     rng = np.random.default_rng(SEED)
     coordinator = SwarmCoordinator(sim_config)
 
     base_x, base_z = base.x, base.z
+
+    print(f"Mission: {mission.title} (base={base_x:.0f},{base_z:.0f})")
 
     # ------------------------------------------------------------------
     print("\n== 1. Initial drone positions ==")
@@ -146,9 +156,12 @@ def run_checks():
     else:
         check("All drones start near base", True)
 
+    # Guard against the "base defaulted to exact world center" bug. Missions
+    # like disaster_response legitimately stage the base close to center (at
+    # the affected-area centroid), so we only rule out exact-center defaults.
     check(
-        "Base is NOT at world center",
-        abs(base_x - WORLD_SIZE / 2) > 1000 or abs(base_z - WORLD_SIZE / 2) > 1000,
+        "Base is not the exact world center default",
+        abs(base_x - WORLD_SIZE / 2) > 10 or abs(base_z - WORLD_SIZE / 2) > 10,
         f"base=({base_x:.0f},{base_z:.0f}), center=({WORLD_SIZE/2:.0f},{WORLD_SIZE/2:.0f})",
     )
 
@@ -303,37 +316,67 @@ def run_checks():
         check("All pre-generated chunks are near base", True)
 
     # ------------------------------------------------------------------
-    print("\n== 5. Survivor cluster is away from base ==")
+    print("\n== 5. Mission clusters seeded and reachable ==")
     # ------------------------------------------------------------------
-    cluster_x = cw._survivor_cluster_x
-    cluster_z = cw._survivor_cluster_z
-    cluster_dist = math.sqrt((cluster_x - base_x) ** 2 + (cluster_z - base_z) ** 2)
-    check(
-        "Survivor cluster is far from base",
-        cluster_dist > WORLD_SIZE * 0.3,
-        f"cluster=({cluster_x:.0f},{cluster_z:.0f}), base=({base_x:.0f},{base_z:.0f}), dist={cluster_dist:.0f}m",
-    )
-
-    # Generate a chunk near the cluster to verify survivors spawn there
-    cluster_chunk_cx = int(cluster_x // CHUNK_SIZE)
-    cluster_chunk_cz = int(cluster_z // CHUNK_SIZE)
+    # Post-Phase-2, missions stage the base *near* their high-mass cluster
+    # (see memory/project_reach_bottleneck.md). The old "cluster far from base"
+    # invariant is gone — the new one is "at least one cluster is within
+    # fresh-drone round-trip reach, and generated chunks at that cluster
+    # contain survivors."
     from src.terrain.chunked import ChunkCoord
 
-    cluster_chunk = cw.get_chunk(ChunkCoord(cluster_chunk_cx, cluster_chunk_cz))
+    clusters = cw._survivor_clusters
     check(
-        "Survivors placed near cluster center",
-        len(cluster_chunk.survivors) > 0,
-        f"chunk ({cluster_chunk_cx},{cluster_chunk_cz}) has {len(cluster_chunk.survivors)} survivors",
+        "Mission seeded at least one cluster",
+        len(clusters) > 0,
+        f"cluster_count={len(clusters)}",
     )
 
-    # Also verify no survivors near base (they should be clustered away)
-    base_chunk_cx = int(base_x // CHUNK_SIZE)
-    base_chunk_cz = int(base_z // CHUNK_SIZE)
-    base_chunk = cw.get_chunk(ChunkCoord(base_chunk_cx, base_chunk_cz))
+    # Verify the highest-weight cluster is within practical reach of the base.
+    # 3km is the conservative bound: fresh-drone reach is ~950m radius but
+    # missions may stage clusters up to ~2.5km when the prior mass is spread.
+    if clusters:
+        cluster_dists = [
+            (w, math.sqrt((cx - base_x) ** 2 + (cz - base_z) ** 2), cx, cz)
+            for (cx, cz, _r, w) in clusters
+        ]
+        cluster_dists.sort(key=lambda t: -t[0])  # by weight desc
+        _top_w, top_dist, top_x, top_z = cluster_dists[0]
+        check(
+            "Highest-weight cluster is reachable from base",
+            top_dist < 3000.0,
+            f"top_cluster=({top_x:.0f},{top_z:.0f}), base=({base_x:.0f},{base_z:.0f}), dist={top_dist:.0f}m",
+        )
+
+        # Generate the chunk containing the top cluster — survivors should
+        # spawn there.
+        cluster_chunk_cx = int(top_x // CHUNK_SIZE)
+        cluster_chunk_cz = int(top_z // CHUNK_SIZE)
+        cluster_chunk = cw.get_chunk(ChunkCoord(cluster_chunk_cx, cluster_chunk_cz))
+        check(
+            "Survivors placed near top cluster",
+            len(cluster_chunk.survivors) > 0,
+            f"chunk ({cluster_chunk_cx},{cluster_chunk_cz}) has "
+            f"{len(cluster_chunk.survivors)} survivors",
+        )
+
+    # Mission metadata sanity: briefing dict has all fields the frontend
+    # IntelBriefing overlay expects.
+    briefing = mission.to_briefing_dict()
+    required_keys = {
+        "name", "title", "description", "known_facts",
+        "base_position", "survival_window_seconds", "intel_pins",
+    }
+    missing = required_keys - set(briefing.keys())
     check(
-        "No survivors near base",
-        len(base_chunk.survivors) == 0,
-        f"chunk ({base_chunk_cx},{base_chunk_cz}) has {len(base_chunk.survivors)} survivors (should be 0)",
+        "Mission briefing has all required fields",
+        not missing,
+        f"missing={missing}",
+    )
+    check(
+        "Mission briefing has >=1 intel pin",
+        len(briefing["intel_pins"]) > 0,
+        f"pin_count={len(briefing['intel_pins'])}",
     )
 
     # ------------------------------------------------------------------
@@ -423,4 +466,15 @@ def run_checks():
 
 
 if __name__ == "__main__":
-    sys.exit(run_checks())
+    # Default: verify the aircraft_crash mission (the historical default).
+    # Pass "all" to run against every registered mission, or a specific name.
+    arg = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_MISSION
+    if arg == "all":
+        exit_code = 0
+        for name in available_missions():
+            print(f"\n{'=' * 60}\n  MISSION: {name}\n{'=' * 60}")
+            failures.clear()
+            rc = run_checks(name)
+            exit_code = max(exit_code, rc)
+        sys.exit(exit_code)
+    sys.exit(run_checks(arg))
