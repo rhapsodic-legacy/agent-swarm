@@ -72,6 +72,7 @@ async def test_full_e2e_pipeline(server):
     chunk_messages: list[dict] = []
     state_updates: list[dict] = []
     overview = None
+    mission_briefing = None
 
     async with websockets.connect(SERVER_URL, max_size=16 * 1024 * 1024) as ws:
         deadline = asyncio.get_event_loop().time() + 20.0
@@ -88,6 +89,16 @@ async def test_full_e2e_pipeline(server):
 
                 elif msg_type == "chunk_terrain":
                     chunk_messages.append(msg)
+
+                elif msg_type == "mission_briefing":
+                    # Phase 2 scenario briefing has a "mission" key; the older
+                    # planner-directive flavor doesn't.
+                    if "mission" in msg:
+                        mission_briefing = msg
+                        m = msg["mission"]
+                        print(f"[OK] Mission: {m['title']} "
+                              f"base=({m['base_position'][0]:.0f}, "
+                              f"{m['base_position'][2]:.0f})")
 
                 elif msg_type == "state_update":
                     state_updates.append(msg)
@@ -155,23 +166,26 @@ async def test_full_e2e_pipeline(server):
     assert "rle" in fog, "No fog grid in state"
     print(f"[OK] Fog grid: {fog.get('width')}x{fog.get('height')}")
 
-    # 9. Drones are at the SW corner base (15% of world_size)
+    # 9. Drones spawn near the mission's base (now mission-driven, was hardcoded SW corner)
+    assert mission_briefing is not None, (
+        "No mission_briefing received — Phase 2 server should send one on connect"
+    )
+    base_x, _, base_z = mission_briefing["mission"]["base_position"]
     d0 = drones[0]
     pos = d0.get("position", [0, 0, 0])
     world_size = last.get("world_size", 10240)
-    expected_base = world_size * 0.15
-    dist_from_base = ((pos[0] - expected_base) ** 2 + (pos[2] - expected_base) ** 2) ** 0.5
+    dist_from_base = ((pos[0] - base_x) ** 2 + (pos[2] - base_z) ** 2) ** 0.5
     print(f"[CHECK] Drone 0 at ({pos[0]:.0f}, {pos[2]:.0f}), "
-          f"base=({expected_base:.0f}, {expected_base:.0f}), dist={dist_from_base:.0f}m")
+          f"base=({base_x:.0f}, {base_z:.0f}), dist={dist_from_base:.0f}m")
     assert dist_from_base < 2000, (
-        f"Drones are {dist_from_base:.0f}m from expected base! "
+        f"Drones are {dist_from_base:.0f}m from mission base! "
         f"Base position is wrong."
     )
 
-    # 10. Survivors are NOT at the base — they should be scattered away
+    # 10. Survivors are NOT all clustered at the base
     base_survivors = [s for s in all_survivors
-                      if ((s['position'][0] - expected_base) ** 2 +
-                          (s['position'][2] - expected_base) ** 2) ** 0.5 < 1024]
+                      if ((s['position'][0] - base_x) ** 2 +
+                          (s['position'][2] - base_z) ** 2) ** 0.5 < 1024]
     remote_survivors = len(all_survivors) - len(base_survivors)
     print(f"[CHECK] Survivors near base: {len(base_survivors)}, remote: {remote_survivors}")
     assert remote_survivors > 0, "All survivors are at the base — they should be scattered away"

@@ -326,6 +326,7 @@ class ChunkedWorld:
         chunk_size: int,
         seed: int,
         config: SimConfig,
+        clusters: list[tuple[float, float, float, float]] | None = None,
     ) -> None:
         """
         Args:
@@ -333,6 +334,11 @@ class ChunkedWorld:
             chunk_size: Size of each chunk in meters (e.g. 256).
             seed: World generation seed.
             config: Simulation config (provides max_elevation, survivor counts, etc.).
+            clusters: Optional pre-computed survivor clusters as
+                (center_x, center_z, radius_m, weight) tuples. When provided,
+                the built-in crash-site placement is skipped — used by Phase 2
+                mission templates so each scenario has its own ground-truth
+                survivor layout.
         """
         self._world_size = world_size
         self._chunk_size = chunk_size
@@ -341,6 +347,11 @@ class ChunkedWorld:
 
         self._chunks_x = math.ceil(world_size / chunk_size)
         self._chunks_z = math.ceil(world_size / chunk_size)
+
+        if clusters is not None:
+            self._survivor_clusters: list[tuple[float, float, float, float]] = list(clusters)
+            self._init_remaining(seed)
+            return
 
         # Survivor placement modeled on real SAR scenarios:
         #
@@ -426,6 +437,14 @@ class ChunkedWorld:
                 0.05,  # 5% each = 10% unrelated
             ))
 
+        self._init_remaining(seed)
+
+    def _init_remaining(self, seed: int) -> None:
+        """Set up noise generators, caches, and noise range estimation.
+
+        Split out so injected-cluster construction (Phase 2 missions) and the
+        legacy default-cluster construction share the same downstream state.
+        """
         # Noise generators — shared across all chunks for seamless edges.
         self._noise_elev = OpenSimplex(seed=seed)
         self._noise_moist = OpenSimplex(seed=seed + _MOISTURE_SEED_OFFSET)

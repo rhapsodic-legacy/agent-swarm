@@ -59,7 +59,36 @@ Sent every simulation tick (~50ms at 20Hz).
 **Fog grid values**: 0 = unexplored, 1 = explored (current), 2 = stale (explored > N ticks ago)
 
 ### `mission_briefing`
-Sent when the Claude mission planner generates a new strategic directive.
+Two flavors share this message type:
+
+**Scenario briefing** — sent on connect and after every reset. Describes the
+active SAR scenario (lost hiker, plane crash, maritime, avalanche, disaster).
+
+```json
+{
+    "type": "mission_briefing",
+    "mission": {
+        "name": "aircraft_crash",
+        "title": "Aircraft Crash — Mountain SAR",
+        "description": "Single-engine aircraft lost contact ...",
+        "known_facts": [
+            "Last radar contact at (3140, 2880)",
+            "Heading 142°, debris cone 2400m long",
+            "Survivor count unknown (1-8 estimated)"
+        ],
+        "base_position": [3500.0, 0.0, 3200.0],
+        "survival_window_seconds": 14400.0,
+        "intel_pins": [
+            {"label": "Last radar contact", "kind": "radar", "position": [3140, 2880]},
+            {"label": "Inferred impact area", "kind": "impact", "position": [4540, 4380]}
+        ]
+    },
+    "available": ["aircraft_crash", "lost_hiker", "maritime_sar", "avalanche", "disaster_response"]
+}
+```
+
+**Strategic directive** — sent when the Claude mission planner generates a
+new strategic directive.
 
 ```json
 {
@@ -70,6 +99,8 @@ Sent when the Claude mission planner generates a new strategic directive.
     "reasoning": "Human prioritized zone C. Zone D is unexplored."
 }
 ```
+
+Disambiguate by presence of `mission` (scenario) vs `briefing` (directive).
 
 ### `agent_log`
 Debug information about agent decisions.
@@ -139,7 +170,16 @@ Simulation control commands.
 ```json
 {
     "type": "sim_control",
-    "action": "pause" | "resume" | "set_speed",
-    "value": 2.0
+    "action": "pause" | "resume" | "set_speed" | "reset",
+    "value": 2.0,
+    "config": {
+        "mission": "lost_hiker",
+        "drone_count": 20,
+        "survivor_count": 25
+    }
 }
 ```
+
+The `config` field is only consumed when `action` is `reset`. Setting
+`config.mission` to a registered mission name swaps the active scenario;
+clients receive a fresh `mission_briefing` on the next broadcast.

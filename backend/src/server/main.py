@@ -37,6 +37,11 @@ from src.simulation.types import (
     Vec3,
     WorldState,
 )
+from src.simulation.mission import (
+    SearchMission,
+    available_missions,
+    build_mission,
+)
 from src.simulation.weather import WeatherSystem
 from src.terrain.chunked import ChunkedWorld
 
@@ -85,6 +90,11 @@ chunked_config = ChunkedWorldConfig(
     chunk_size=1024,
     seed=42,
 )
+# Active mission — drives base position, ground-truth clusters, and the PoC prior.
+# Defaults to aircraft_crash to preserve the existing scenario shape; can be
+# overridden via the reset config's `mission` field.
+current_mission_name: str = "aircraft_crash"
+current_mission: SearchMission | None = None
 sim_running = True
 sim_speed = 1.0  # multiplier
 sim_reset_requested = False
@@ -188,6 +198,15 @@ async def broadcast_chunked(
                 overview["type"] = "world_overview"
                 await ws.send_text(json.dumps(overview))
 
+                # Send mission briefing so the operator sees scenario context
+                if current_mission is not None:
+                    briefing = {
+                        "type": "mission_briefing",
+                        "mission": current_mission.to_briefing_dict(),
+                        "available": available_missions(),
+                    }
+                    await ws.send_text(json.dumps(briefing))
+
                 # Send chunks near the base (where drones start)
                 base = world.base_position
                 nearby = chunked_world.get_chunks_near(base.x, base.z, 2048.0)
@@ -281,22 +300,29 @@ async def _handle_chat(websocket: WebSocket, message: str) -> None:
 async def simulation_loop() -> None:
     """Main simulation loop — runs as a background async task."""
     global pending_commands, sim_reset_requested, current_world, pending_reset_config, sim_config
+    global current_mission, current_mission_name
 
     logger.info("Initializing chunked world (%dm, %dm chunks)...",
                 chunked_config.world_size, chunked_config.chunk_size)
 
     seed = chunked_config.seed
+    world_size = chunked_config.world_size
+
+    # Build the initial mission. Drives clusters, base position, and PoC prior.
+    mission = build_mission(current_mission_name, world_size, seed)
+    current_mission = mission
+    logger.info("Mission: %s (base=%.0f,%.0f)",
+                mission.title, mission.base_position.x, mission.base_position.z)
+
     chunked_world = ChunkedWorld(
         chunked_config.world_size,
         chunked_config.chunk_size,
         seed,
         sim_config,
+        clusters=mission.clusters,
     )
 
-    # Create a minimal WorldState for the chunked world
-    world_size = chunked_config.world_size
-    # Base in SW corner — survivors cluster elsewhere, testing search convergence
-    base = Vec3(world_size * 0.15, 0.0, world_size * 0.15)
+    base = mission.base_position
 
     from src.simulation.drone import create_drone_fleet
     drones = create_drone_fleet(sim_config.drone_count, base, sim_config)
@@ -314,22 +340,12 @@ async def simulation_loop() -> None:
     fog_res = max(world_size // 10, 256)
     global_fog = np.full((fog_res, fog_res), FOG_UNEXPLORED, dtype=np.int8)
 
-    # Bayesian search map — seeded from the survivor cluster priors in the
-    # ChunkedWorld. Phase 2 will replace this with mission-type priors; for now
-    # we use the ground-truth cluster layout as the "intel" (imperfect).
+    # Bayesian search map — seeded by the active mission. Phase 3 will widen
+    # the gap between this prior and the ground-truth clusters; for now the
+    # prior is shaped from the same cluster geometry the mission generated.
     from src.simulation.search_map import SearchMap
     search_map = SearchMap.empty(world_size=float(world_size), cell_size=40.0)
-    for (cx, cz, cr, cw_weight) in chunked_world._survivor_clusters:
-        # Bias the prior: crash-site cluster sharper, debris field spread,
-        # unrelated hikers very diffuse.
-        search_map.add_gaussian(
-            center_world=(cx, cz),
-            radius_meters=max(cr, 200.0),
-            weight=cw_weight,
-        )
-    # Also add a weak uniform baseline so no cell is truly "zero probability"
-    search_map.poc += np.float32(0.001)
-    search_map.normalize(target_mass=1.0)
+    mission.seed_poc_grid(search_map)
 
     world = WorldState(
         tick=0,
@@ -399,15 +415,27 @@ async def simulation_loop() -> None:
                 transponder_range=sim_config.transponder_range,
             )
 
-            # Rebuild chunked world
+            # Pick mission for the reset (defaults to current).
+            mission_name = str(cfg.get("mission", current_mission_name))
+            if mission_name not in available_missions():
+                logger.warning("Unknown mission '%s', falling back to %s",
+                               mission_name, current_mission_name)
+                mission_name = current_mission_name
+            current_mission_name = mission_name
+            mission = build_mission(mission_name, world_size, new_seed)
+            current_mission = mission
+            logger.info("Reset mission: %s", mission.title)
+
+            # Rebuild chunked world with the new mission's clusters
             chunked_world = ChunkedWorld(
                 chunked_config.world_size,
                 chunked_config.chunk_size,
                 new_seed,
                 sim_config,
+                clusters=mission.clusters,
             )
 
-            base = Vec3(world_size * 0.15, 0.0, world_size * 0.15)
+            base = mission.base_position
             drones = create_drone_fleet(
                 int(cfg.get("drone_count", sim_config.drone_count)),
                 base, sim_config,
@@ -422,16 +450,9 @@ async def simulation_loop() -> None:
                 seed=new_seed,
             )
             global_fog = np.full((fog_res, fog_res), FOG_UNEXPLORED, dtype=np.int8)
-            # Reset search map with fresh priors
+            # Reset search map seeded by the new mission's prior
             search_map = SearchMap.empty(world_size=float(world_size), cell_size=40.0)
-            for (cx, cz, cr, cw_weight) in chunked_world._survivor_clusters:
-                search_map.add_gaussian(
-                    center_world=(cx, cz),
-                    radius_meters=max(cr, 200.0),
-                    weight=cw_weight,
-                )
-            search_map.poc += np.float32(0.001)
-            search_map.normalize(target_mass=1.0)
+            mission.seed_poc_grid(search_map)
             world = WorldState(
                 tick=0,
                 elapsed=0.0,
