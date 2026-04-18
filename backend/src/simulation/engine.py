@@ -213,10 +213,15 @@ def _apply_command(drones: list[Drone], cmd: Command) -> list[Drone]:
     elif cmd.type == "return_to_base" and cmd.drone_id is not None:
         idx = cmd.drone_id
         if 0 <= idx < len(drones) and drones[idx].status == DroneStatus.ACTIVE:
+            # Without target=cmd.target, physics keeps flying to the stale
+            # waypoint (e.g., a mid-sweep ring point) and the drone hovers
+            # there until battery depletes.
+            new_target = cmd.target if cmd.target is not None else drones[idx].target
             drones[idx] = replace(
                 drones[idx],
                 status=DroneStatus.RETURNING,
                 current_task="returning",
+                target=new_target,
             )
 
     elif cmd.type == "search_area" and cmd.drone_id is not None and cmd.target is not None:

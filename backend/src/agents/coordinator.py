@@ -76,6 +76,45 @@ class DroneAgent:
     ticks_at_target: int = 0  # how long we've been near current target
     # Local belief: which survivors this drone knows about (shared via comms)
     known_survivors: set[int] | None = None
+    # Hotspot sweep queue: when the drone arrives at a PoC hotspot, we queue
+    # perimeter waypoints so it sweeps the surrounding cluster before
+    # ping-ponging to the next hotspot across the map.
+    local_sweep_waypoints: list[Vec3] | None = None
+
+
+def _generate_local_sweep_waypoints(
+    center: Vec3,
+    inner_radius: float = 80.0,
+    outer_radius: float = 180.0,
+) -> list[Vec3]:
+    """Two hexagonal rings around a PoC hotspot.
+
+    Survivor clusters are 50-300m across and survivors drift well beyond
+    cluster centers (observed up to 1km drift in simulation). Sensor range
+    is 40m, so a drone landing on a hotspot cell scans one 40m disc and
+    leaves — it misses everyone in the cluster.
+
+    Two rings (inner 80m / outer 180m) with 6 points each cover a donut
+    from ~40m to ~220m around the hotspot. Outer ring is rotated 30° so
+    scan footprints interlock. 12 waypoints × ~100m each = ~1200m sweep,
+    manageable on a single battery cycle at ~10 m/s cruise.
+    """
+    import math
+
+    waypoints: list[Vec3] = []
+    # Inner ring: 6 points at 0°, 60°, 120°, ...
+    for k in range(6):
+        angle = k * math.pi / 3.0
+        x = center.x + math.cos(angle) * inner_radius
+        z = center.z + math.sin(angle) * inner_radius
+        waypoints.append(Vec3(x, center.y, z))
+    # Outer ring: 6 points at 30°, 90°, 150°, ... (offset for interlocking)
+    for k in range(6):
+        angle = (k * math.pi / 3.0) + (math.pi / 6.0)
+        x = center.x + math.cos(angle) * outer_radius
+        z = center.z + math.sin(angle) * outer_radius
+        waypoints.append(Vec3(x, center.y, z))
+    return waypoints
 
 
 class SwarmCoordinator:
@@ -205,6 +244,7 @@ class SwarmCoordinator:
             if drone.status == DroneStatus.ACTIVE and self._should_return_for_fuel(drone, world):
                 agent.task = DroneTask.RETURNING_TO_BASE
                 agent.current_target = world.base_position
+                agent.local_sweep_waypoints = None
                 commands.append(
                     Command(type="return_to_base", drone_id=drone.id, target=world.base_position)
                 )
@@ -416,16 +456,37 @@ class SwarmCoordinator:
         """
         if self.phase == SearchPhase.COMPLETE:
             agent.task = DroneTask.RETURNING_TO_BASE
+            agent.local_sweep_waypoints = None
             return world.base_position
 
         # Bayesian PoC-based routing (preferred when search map is available)
         if world.search_map is not None:
+            # Continue sweeping the current cluster before picking a new hotspot
+            if agent.local_sweep_waypoints:
+                next_wp = agent.local_sweep_waypoints.pop(0)
+                tw = world.terrain.width
+                th = world.terrain.height
+                tx = max(50.0, min(float(tw - 50), next_wp.x))
+                tz = max(50.0, min(float(th - 50), next_wp.z))
+                trow = int(min(tz, th - 1))
+                tcol = int(min(tx, tw - 1))
+                elev = float(world.terrain.heightmap[trow][tcol])
+                agent.task = DroneTask.SWEEPING
+                return Vec3(tx, elev, tz)
+
             poc_target = self._poc_target(drone, agent, world)
             if poc_target is not None:
+                # Enqueue a local sweep — the drone will visit the hotspot
+                # center first (this return), then these perimeter points
+                # before selecting a new hotspot.
+                agent.local_sweep_waypoints = _generate_local_sweep_waypoints(
+                    poc_target
+                )
                 return poc_target
             # No reachable hot cell (likely low battery or far from hotspots).
             # Return to base rather than picking an unreachable target.
             agent.task = DroneTask.RETURNING_TO_BASE
+            agent.local_sweep_waypoints = None
             return world.base_position
 
         fog_grid = world.fog_grid
