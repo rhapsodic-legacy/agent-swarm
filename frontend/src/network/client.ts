@@ -4,13 +4,20 @@
  * Supports both monolithic terrain and chunked world messages.
  */
 
-import type { StateUpdate, TerrainData, ChunkTerrainData, WorldOverview } from "./types";
+import type {
+  StateUpdate,
+  TerrainData,
+  ChunkTerrainData,
+  WorldOverview,
+  MissionBriefing,
+} from "./types";
 
 export type StateCallback = (state: StateUpdate) => void;
 export type ConnectionCallback = (connected: boolean) => void;
 export type ChatCallback = (message: string) => void;
 export type ChunkCallback = (chunk: ChunkTerrainData) => void;
 export type OverviewCallback = (overview: WorldOverview) => void;
+export type MissionBriefingCallback = (msg: MissionBriefing) => void;
 
 export class SwarmClient {
   private ws: WebSocket | null = null;
@@ -22,6 +29,7 @@ export class SwarmClient {
   private onChat: ChatCallback | null = null;
   private onChunk: ChunkCallback | null = null;
   private onOverview: OverviewCallback | null = null;
+  private onMissionBriefing: MissionBriefingCallback | null = null;
   private terrain: TerrainData | null = null;
   private latestState: StateUpdate | null = null;
   private shouldReconnect = true;
@@ -57,7 +65,7 @@ export class SwarmClient {
   sendSimControl(
     action: "pause" | "resume" | "set_speed" | "reset",
     value?: number,
-    config?: Record<string, number>,
+    config?: Record<string, number | string>,
   ): void {
     this.send({
       type: "sim_control",
@@ -84,6 +92,10 @@ export class SwarmClient {
 
   onWorldOverview(callback: OverviewCallback): void {
     this.onOverview = callback;
+  }
+
+  onMissionBriefingMessage(callback: MissionBriefingCallback): void {
+    this.onMissionBriefing = callback;
   }
 
   getTerrain(): TerrainData | null {
@@ -146,6 +158,10 @@ export class SwarmClient {
           const chatMsg = raw.message as string | undefined;
           if (chatMsg && this.onChat) {
             this.onChat(chatMsg);
+          }
+        } else if (msgType === "mission_briefing") {
+          if (this.onMissionBriefing) {
+            this.onMissionBriefing(raw as unknown as MissionBriefing);
           }
         }
       };

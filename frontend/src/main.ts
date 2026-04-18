@@ -15,6 +15,9 @@ import { Minimap } from "@/ui/minimap";
 import { ActivityLog } from "@/ui/activityLog";
 import { GodModeOverlay } from "@/ui/godMode";
 import { HelpOverlay } from "@/ui/helpOverlay";
+import { IntelBriefing } from "@/ui/intelBriefing";
+import { isScenarioBriefing } from "@/network/types";
+import type { MissionBriefing } from "@/network/types";
 
 // ============================================================================
 // Scene Setup
@@ -376,6 +379,7 @@ const godMode = new GodModeOverlay(scene);
 import { PoCHeatmap } from "@/scene/pocHeatmap";
 const pocHeatmap = new PoCHeatmap(scene);
 const helpOverlay = new HelpOverlay();
+const intelBriefing = new IntelBriefing();
 const settingsPanel = new SettingsPanel((config: SimSettings) => {
   // Send reset with config to backend
   paused = false;
@@ -386,13 +390,29 @@ const settingsPanel = new SettingsPanel((config: SimSettings) => {
   terrainRenderer.dispose();
   fogRenderer.dispose();
   clearHazardMeshes();
-  client.sendSimControl("reset", undefined, config as unknown as Record<string, number>);
+  client.sendSimControl("reset", undefined, config as unknown as Record<string, number | string>);
   settingsPanel.toggle();
   console.log("[DroneSwarm] Reset with custom config:", config);
 });
 
 // Wire chat responses from server to the chat panel
 client.onChatResponse((msg) => chatPanel.handleResponse(msg));
+
+// Mission briefings drive the intel overlay, minimap pins, and the settings
+// dropdown. The same message type carries both scenario briefings (sent on
+// connect/reset) and strategic directives from the Claude planner — only the
+// scenario flavor is interesting for the Phase 2 UI.
+client.onMissionBriefingMessage((msg: MissionBriefing) => {
+  if (!isScenarioBriefing(msg)) {
+    // Strategic directives are surfaced elsewhere (HUD briefing text).
+    return;
+  }
+  intelBriefing.setBriefing(msg.mission);
+  minimap.setMission(msg.mission);
+  settingsPanel.setMissions(msg.available, msg.mission.name);
+  console.log(`[DroneSwarm] Mission: ${msg.mission.title}`);
+});
+
 client.connect();
 
 // ============================================================================

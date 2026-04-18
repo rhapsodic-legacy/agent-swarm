@@ -4,6 +4,7 @@
  */
 
 export interface SimSettings {
+  mission: string;
   terrain_size: number;
   drone_count: number;
   survivor_count: number;
@@ -21,8 +22,19 @@ export interface SimSettings {
   transponder_ratio: number;
 }
 
+const DEFAULT_MISSION = "aircraft_crash";
+const MISSION_LABELS: Record<string, string> = {
+  aircraft_crash: "Aircraft Crash — Mountain SAR",
+  lost_hiker: "Lost Hiker — Wilderness",
+  maritime_sar: "Maritime — Drift Search",
+  avalanche: "Avalanche — Burial Search",
+  disaster_response: "Disaster Response — Wide Area",
+};
+
+type NumericSetting = Exclude<keyof SimSettings, "mission">;
+
 interface ParameterDef {
-  key: keyof SimSettings;
+  key: NumericSetting;
   label: string;
   min: number;
   max: number;
@@ -32,7 +44,7 @@ interface ParameterDef {
 
 interface Preset {
   name: string;
-  values: Partial<SimSettings>;
+  values: Partial<Record<NumericSetting, number>>;
 }
 
 const PARAMETERS: ParameterDef[] = [
@@ -66,16 +78,18 @@ export class SettingsPanel {
   private container: HTMLDivElement;
   private visible = false;
   private settings: SimSettings;
-  private sliders: Map<keyof SimSettings, HTMLInputElement> = new Map();
-  private valueDisplays: Map<keyof SimSettings, HTMLSpanElement> = new Map();
+  private sliders: Map<NumericSetting, HTMLInputElement> = new Map();
+  private valueDisplays: Map<NumericSetting, HTMLSpanElement> = new Map();
   private onApply: (config: SimSettings) => void;
   private keydownHandler: (e: KeyboardEvent) => void;
+  private missionSelect: HTMLSelectElement | null = null;
+  private availableMissions: string[] = Object.keys(MISSION_LABELS);
 
   constructor(onApply: (config: SimSettings) => void) {
     this.onApply = onApply;
 
     // Initialize settings with defaults
-    this.settings = {} as SimSettings;
+    this.settings = { mission: DEFAULT_MISSION } as SimSettings;
     for (const param of PARAMETERS) {
       this.settings[param.key] = param.default;
     }
@@ -96,6 +110,30 @@ export class SettingsPanel {
 
   isVisible(): boolean {
     return this.visible;
+  }
+
+  /**
+   * Update the available missions list and the currently active mission —
+   * driven by the `mission_briefing` scenario message from the backend.
+   */
+  setMissions(available: string[], current: string): void {
+    if (available.length > 0) {
+      this.availableMissions = available;
+    }
+    if (current) {
+      this.settings.mission = current;
+    }
+    if (this.missionSelect) {
+      // Rebuild options to reflect what the backend actually exposes
+      this.missionSelect.innerHTML = "";
+      for (const name of this.availableMissions) {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = MISSION_LABELS[name] ?? name;
+        this.missionSelect.appendChild(opt);
+      }
+      this.missionSelect.value = this.settings.mission;
+    }
   }
 
   dispose(): void {
@@ -240,6 +278,12 @@ export class SettingsPanel {
       padding: "12px 16px",
     });
 
+    // Mission selector — drives which SAR scenario the backend spawns
+    body.appendChild(this.buildMissionSection());
+
+    // Separator
+    body.appendChild(this.buildSeparator());
+
     // Presets
     body.appendChild(this.buildPresetSection());
 
@@ -257,6 +301,54 @@ export class SettingsPanel {
     panel.appendChild(this.buildActionBar());
 
     return panel;
+  }
+
+  private buildMissionSection(): HTMLDivElement {
+    const section = document.createElement("div");
+    Object.assign(section.style, {
+      marginBottom: "4px",
+    });
+
+    const label = document.createElement("div");
+    Object.assign(label.style, {
+      fontSize: "11px",
+      color: "#888",
+      textTransform: "uppercase",
+      letterSpacing: "1px",
+      marginBottom: "8px",
+    });
+    label.textContent = "Mission Scenario";
+    section.appendChild(label);
+
+    const select = document.createElement("select");
+    Object.assign(select.style, {
+      width: "100%",
+      background: "rgba(0, 0, 0, 0.6)",
+      border: "1px solid rgba(0, 200, 255, 0.3)",
+      color: "#e0e0e0",
+      padding: "6px 8px",
+      borderRadius: "4px",
+      fontSize: "12px",
+      fontFamily: "inherit",
+      cursor: "pointer",
+      outline: "none",
+    });
+
+    for (const name of this.availableMissions) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = MISSION_LABELS[name] ?? name;
+      select.appendChild(opt);
+    }
+    select.value = this.settings.mission;
+
+    select.addEventListener("change", () => {
+      this.settings.mission = select.value;
+    });
+
+    this.missionSelect = select;
+    section.appendChild(select);
+    return section;
   }
 
   private buildPresetSection(): HTMLDivElement {
@@ -462,7 +554,7 @@ export class SettingsPanel {
   }
 
   private applyPreset(preset: Preset): void {
-    for (const [key, value] of Object.entries(preset.values) as [keyof SimSettings, number][]) {
+    for (const [key, value] of Object.entries(preset.values) as [NumericSetting, number][]) {
       this.settings[key] = value;
 
       const slider = this.sliders.get(key);
@@ -477,7 +569,7 @@ export class SettingsPanel {
     }
   }
 
-  private formatValue(key: keyof SimSettings, value: number): string {
+  private formatValue(key: NumericSetting, value: number): string {
     if (key === "battery_drain" || key === "canopy_occlusion" || key === "urban_occlusion" ||
         key === "weather_visibility" || key === "night_penalty" || key === "transponder_ratio") {
       return value.toFixed(2);

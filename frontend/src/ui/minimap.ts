@@ -4,13 +4,21 @@
  * Drone positions drawn as dots. Survivor clusters as red marks.
  */
 
-import type { DroneState, SurvivorState, WorldOverview } from "@/network/types";
+import type {
+  DroneState,
+  IntelPin,
+  MissionScenario,
+  SurvivorState,
+  WorldOverview,
+} from "@/network/types";
 
 const MAP_SIZE = 180; // pixels on screen
 const BORDER_COLOR = "rgba(0, 200, 255, 0.4)";
 const DRONE_COLOR = "#00ffff";
 const SURVIVOR_COLOR = "#ff2200";
 const BASE_COLOR = "#ffaa00";
+const INTEL_PIN_COLOR = "#00c8ff";
+const INTEL_RADIUS_COLOR = "rgba(0, 200, 255, 0.5)";
 
 export class Minimap {
   private container: HTMLDivElement;
@@ -19,6 +27,9 @@ export class Minimap {
   private overview: WorldOverview | null = null;
   private overviewImage: ImageData | null = null;
   private worldSize = 0;
+  private intelPins: IntelPin[] = [];
+  // Base position in world meters (x, z). Comes from the mission briefing.
+  private basePosition: [number, number] | null = null;
 
   constructor() {
     this.container = document.createElement("div");
@@ -47,6 +58,12 @@ export class Minimap {
     this.ctx.imageSmoothingEnabled = false;
 
     document.getElementById("app")!.appendChild(this.container);
+  }
+
+  /** Apply mission context — intel pins and the true base position. */
+  setMission(mission: MissionScenario): void {
+    this.intelPins = mission.intel_pins ?? [];
+    this.basePosition = [mission.base_position[0], mission.base_position[2]];
   }
 
   setOverview(overview: WorldOverview): void {
@@ -89,11 +106,49 @@ export class Minimap {
     ctx.fillStyle = "rgba(0, 0, 0, 0.3)";
     ctx.fillRect(0, 0, MAP_SIZE, MAP_SIZE);
 
-    // Draw base position
-    const baseX = (ws * 0.15 / ws) * MAP_SIZE;
-    const baseZ = (ws * 0.15 / ws) * MAP_SIZE;
+    // Draw intel pin radius rings first so pins draw on top.
+    for (const pin of this.intelPins) {
+      if (typeof pin.radius === "number" && pin.radius > 0) {
+        const cx = (pin.position[0] / ws) * MAP_SIZE;
+        const cz = (pin.position[1] / ws) * MAP_SIZE;
+        const r = (pin.radius / ws) * MAP_SIZE;
+        ctx.save();
+        ctx.strokeStyle = INTEL_RADIUS_COLOR;
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        ctx.beginPath();
+        ctx.arc(cx, cz, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    // Draw base position (from mission briefing; falls back to 15% default)
+    const base =
+      this.basePosition ?? ([ws * 0.15, ws * 0.15] as [number, number]);
+    const baseX = (base[0] / ws) * MAP_SIZE;
+    const baseZ = (base[1] / ws) * MAP_SIZE;
     ctx.fillStyle = BASE_COLOR;
     ctx.fillRect(baseX - 3, baseZ - 3, 6, 6);
+
+    // Draw intel pins — diamond markers distinct from base/drones/survivors.
+    for (const pin of this.intelPins) {
+      const px = (pin.position[0] / ws) * MAP_SIZE;
+      const pz = (pin.position[1] / ws) * MAP_SIZE;
+      ctx.save();
+      ctx.fillStyle = INTEL_PIN_COLOR;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(px, pz - 4);
+      ctx.lineTo(px + 4, pz);
+      ctx.lineTo(px, pz + 4);
+      ctx.lineTo(px - 4, pz);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
 
     // Draw survivors
     if (survivors) {

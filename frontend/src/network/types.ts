@@ -173,12 +173,45 @@ export interface AgentInfo {
   activity_log?: ActivityLogEntry[];
 }
 
-export interface MissionBriefing {
+export interface IntelPin {
+  label: string;
+  kind: string;
+  position: [number, number];
+  radius?: number;
+}
+
+export interface MissionScenario {
+  name: string;
+  title: string;
+  description: string;
+  known_facts: string[];
+  base_position: [number, number, number];
+  survival_window_seconds: number;
+  intel_pins: IntelPin[];
+}
+
+/** Scenario briefing — sent on connect and after every reset. */
+export interface MissionBriefingScenario {
+  type: "mission_briefing";
+  mission: MissionScenario;
+  available: string[];
+}
+
+/** Strategic directive — sent when the Claude planner issues a new directive. */
+export interface MissionBriefingDirective {
   type: "mission_briefing";
   tick: number;
   briefing: string;
   zone_priorities: Record<string, string>;
   reasoning: string;
+}
+
+export type MissionBriefing = MissionBriefingScenario | MissionBriefingDirective;
+
+export function isScenarioBriefing(
+  msg: MissionBriefing,
+): msg is MissionBriefingScenario {
+  return (msg as MissionBriefingScenario).mission !== undefined;
 }
 
 /** Chunk terrain data from the chunked world system. */
