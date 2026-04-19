@@ -368,7 +368,7 @@ async def simulation_loop() -> None:
     weather = WeatherSystem(seed, world_size)
     hazards = HazardSystem(world_size, world_size, seed)
     daycycle = DayCycle(day_length=300.0)
-    metrics = MetricsTracker()
+    metrics = MetricsTracker(mission=mission)
     replay = ReplayRecorder(record_interval=5)
     replay.start()
 
@@ -473,7 +473,7 @@ async def simulation_loop() -> None:
             weather = WeatherSystem(new_seed, world_size)
             hazards = HazardSystem(world_size, world_size, new_seed)
             daycycle = DayCycle(day_length=day_length)
-            metrics = MetricsTracker()
+            metrics = MetricsTracker(mission=mission)
             replay = ReplayRecorder(record_interval=5)
             replay.start()
             pending_commands = []

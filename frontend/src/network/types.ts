@@ -161,16 +161,46 @@ export interface DayCycleInfo {
   phase: string;
 }
 
-export interface MetricsInfo {
+/** "Latest" snapshot — per-tick scalars. */
+export interface MetricsLatest {
   elapsed: number;
   coverage_pct: number;
   survivors_found: number;
+  total_survivors: number;
   active_drones: number;
   avg_battery: number;
-  efficiency_score: number;
-  coverage_rate: number;
+  entropy: number | null;
+}
+
+/** Tight "is this a good run?" signals. */
+export interface MetricsSearchQuality {
+  mttd_seconds: number | null;
+  survival_window_pct: number | null;
+  entropy_drop_pct: number | null;
+}
+
+export interface MetricsEvidenceProgress {
+  discovered: number;
+  planted: number;
+}
+
+export interface MetricsResources {
+  total_drone_km: number;
+  active_fraction: number | null;
+}
+
+export interface MetricsInfo {
+  latest: MetricsLatest;
   time_to_first_discovery: number | null;
   time_to_full_coverage: number | null;
+  time_to_first_evidence: number | null;
+  evidence_to_survivor_latency: number | null;
+  event_counts: Record<string, number>;
+  efficiency_score: number | null;
+  coverage_rate: number | null;
+  search_quality: MetricsSearchQuality;
+  evidence_progress: MetricsEvidenceProgress;
+  resources: MetricsResources;
 }
 
 export interface HazardInfo {

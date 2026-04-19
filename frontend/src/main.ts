@@ -16,6 +16,7 @@ import { ActivityLog } from "@/ui/activityLog";
 import { GodModeOverlay } from "@/ui/godMode";
 import { HelpOverlay } from "@/ui/helpOverlay";
 import { IntelBriefing } from "@/ui/intelBriefing";
+import { MissionScore } from "@/ui/missionScore";
 import { isScenarioBriefing } from "@/network/types";
 import type { MissionBriefing } from "@/network/types";
 
@@ -380,6 +381,7 @@ import { PoCHeatmap } from "@/scene/pocHeatmap";
 const pocHeatmap = new PoCHeatmap(scene);
 const helpOverlay = new HelpOverlay();
 const intelBriefing = new IntelBriefing();
+const missionScore = new MissionScore();
 const settingsPanel = new SettingsPanel((config: SimSettings) => {
   // Send reset with config to backend
   paused = false;
@@ -514,6 +516,7 @@ function animate(now: number = 0): void {
     );
     interaction.update(latestState.drones);
     updateHUD(latestState);
+    missionScore.update(latestState.agent_info?.metrics);
   }
 
   controls.update();
