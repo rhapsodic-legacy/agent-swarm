@@ -25,7 +25,6 @@ from src.agents.pathfinding import (
     potential_field_direction,
 )
 from src.agents.search_patterns import (
-    assign_zones,
     frontier_search,
     lawnmower_waypoints,
     priority_search,
@@ -191,6 +190,7 @@ class SwarmCoordinator:
         self._share_knowledge(world)
 
         # --- Log significant events ---
+        evidence_this_tick = 0
         for event in world.events:
             if event.type.name == "SURVIVOR_FOUND":
                 self._log(world.tick, world.elapsed, event.drone_id,
@@ -204,6 +204,25 @@ class SwarmCoordinator:
             elif event.type.name == "DRONE_COMMS_LOST":
                 self._log(world.tick, world.elapsed, event.drone_id,
                           "Comms lost — out of range.", "alert")
+            elif event.type.name == "EVIDENCE_FOUND":
+                evidence_this_tick += 1
+                data = event.data or {}
+                kind = data.get("kind", "evidence")
+                pos = data.get("position", [0, 0, 0])
+                self._log(
+                    world.tick, world.elapsed, event.drone_id,
+                    f"Evidence: {kind} at ({pos[0]:.0f}, {pos[2]:.0f}). Updating search.",
+                    "event",
+                )
+
+        # When new evidence comes in, the PoC posterior has already been
+        # re-shaped inside the engine (search_map.update_on_evidence).
+        # Bust the hotspot cache so the next target selection samples the
+        # new posterior instead of the stale pre-evidence one.
+        if evidence_this_tick > 0:
+            self._poc_cache_tick = -1
+            self._poc_hottest = []
+            self._poc_claimed = set()
 
         # --- LLM Layer: Mission Planner (Claude) ---
         for event in world.events:
@@ -527,6 +546,7 @@ class SwarmCoordinator:
         ALL high-probability regions simultaneously, not just the biggest one.
         """
         import math
+
         from src.simulation.search_map import SearchMap
 
         sm: SearchMap = world.search_map  # type: ignore[assignment]

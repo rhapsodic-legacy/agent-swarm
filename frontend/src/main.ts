@@ -398,6 +398,16 @@ const settingsPanel = new SettingsPanel((config: SimSettings) => {
 // Wire chat responses from server to the chat panel
 client.onChatResponse((msg) => chatPanel.handleResponse(msg));
 
+// Evidence notifications are one-shot per discovery. The full list of
+// discovered clues lives on state.evidence and drives the 3D + minimap
+// markers each frame; this handler just logs for debugging and gives the
+// heatmap a hint to refresh on the next state update.
+client.onEvidenceDiscovered((msg) => {
+  console.log(
+    `[DroneSwarm] Evidence: ${msg.kind} @ (${msg.position[0].toFixed(0)}, ${msg.position[2].toFixed(0)}) drone=${msg.drone_id}`,
+  );
+});
+
 // Mission briefings drive the intel overlay, minimap pins, and the settings
 // dropdown. The same message type carries both scenario briefings (sent on
 // connect/reset) and strategic directives from the Claude planner — only the
@@ -477,7 +487,13 @@ function animate(now: number = 0): void {
       }
       fogRenderer.updateFromRLE(latestState.fog_grid);
     }
-    overlayRenderer.update(latestState.drones, latestState.comms_links, latestState.survivors, dt);
+    overlayRenderer.update(
+      latestState.drones,
+      latestState.comms_links,
+      latestState.survivors,
+      dt,
+      latestState.evidence,
+    );
     // Only show god mode survivors on loaded terrain chunks
     const chunkSz = (latestState as unknown as Record<string, unknown>).chunk_size as number | undefined;
     const visibleSurvivors = chunkSz && latestState.all_survivors
@@ -491,7 +507,11 @@ function animate(now: number = 0): void {
     godMode.update(visibleSurvivors, dt);
     // PoC heatmap: only present in state every 10 ticks
     pocHeatmap.update(latestState.poc_grid);
-    minimap.update(latestState.drones, latestState.all_survivors);
+    minimap.update(
+      latestState.drones,
+      latestState.all_survivors,
+      latestState.evidence,
+    );
     interaction.update(latestState.drones);
     updateHUD(latestState);
   }

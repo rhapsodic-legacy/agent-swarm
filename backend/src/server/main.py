@@ -23,24 +23,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.agents.chat_handler import ChatHandler
 from src.agents.coordinator import SwarmCoordinator
 from src.simulation.daycycle import DayCycle
-from src.simulation.engine import create_world, get_coverage_pct, tick, tick_chunked
+from src.simulation.engine import tick_chunked
 from src.simulation.hazards import HazardSystem
 from src.simulation.metrics import MetricsTracker
-from src.simulation.replay import ReplayRecorder
-from src.simulation.serializer import serialize_state
-from src.simulation.types import (
-    ChunkedWorldConfig,
-    Command,
-    FOG_UNEXPLORED,
-    SimConfig,
-    Terrain,
-    Vec3,
-    WorldState,
-)
 from src.simulation.mission import (
     SearchMission,
     available_missions,
     build_mission,
+)
+from src.simulation.replay import ReplayRecorder
+from src.simulation.types import (
+    FOG_UNEXPLORED,
+    ChunkedWorldConfig,
+    Command,
+    SimConfig,
+    Terrain,
+    Vec3,
+    WorldState,
 )
 from src.simulation.weather import WeatherSystem
 from src.terrain.chunked import ChunkedWorld
@@ -359,6 +358,7 @@ async def simulation_loop() -> None:
         base_position=base,
         tick_rate=sim_config.tick_rate,
         search_map=search_map,
+        evidence=tuple(mission.evidence),
     )
 
     fog_scale = world_size / fog_res  # meters per fog cell
@@ -465,6 +465,7 @@ async def simulation_loop() -> None:
                 base_position=base,
                 tick_rate=sim_config.tick_rate,
                 search_map=search_map,
+                evidence=tuple(mission.evidence),
             )
             rng = np.random.default_rng(new_seed)
             day_length = float(cfg.get("day_length", 300.0))
@@ -586,16 +587,38 @@ async def simulation_loop() -> None:
                     {"type": e.type.name.lower(), "tick": e.tick, "drone_id": e.drone_id, "survivor_id": e.survivor_id}
                     for e in world.events
                 ],
+                "evidence": [
+                    {
+                        "id": ev.id,
+                        "kind": ev.kind,
+                        "position": [round(ev.position.x, 1), round(ev.position.y, 1), round(ev.position.z, 1)],
+                        "confidence": round(ev.confidence, 2),
+                        "heading": round(ev.heading, 3) if ev.heading is not None else None,
+                        "age_hours": ev.age_hours,
+                        "discovered_by": ev.discovered_by,
+                        "discovered_at_tick": ev.discovered_at_tick,
+                    }
+                    for ev in world.evidence
+                    if ev.discovered
+                ],
                 "coverage_pct": round(coverage_pct, 1),
                 "agent_info": agent_info,
                 "world_size": world_size,
                 "chunk_size": chunked_config.chunk_size,
             }
 
+            # One-shot notifications for each clue discovered this tick —
+            # frontend uses these to pulse the heatmap / log the find.
+            newly_found_evidence = [
+                e for e in world.events
+                if e.type.name == "EVIDENCE_FOUND"
+            ]
+
             # PoC heatmap: send every 10 ticks (1 Hz at 10 Hz sim).
             # 64x64 grid at uint8 = 4KB per broadcast (cheap).
             if world.tick % 10 == 0 and world.search_map is not None:
                 import base64
+
                 from src.simulation.search_map import SearchMap
                 sm: SearchMap = world.search_map  # type: ignore[assignment]
                 down = sm.downsample(64)
@@ -611,6 +634,43 @@ async def simulation_loop() -> None:
                 }
 
             await broadcast_chunked(state_msg, chunked_world, active_chunks, world, agent_info)
+
+            # Broadcast per-discovery evidence notifications. Look up the
+            # full Evidence record for each EVIDENCE_FOUND event so the
+            # frontend gets geometry + heading, not just the event stub.
+            if newly_found_evidence:
+                evidence_by_id = {e.id: e for e in world.evidence}
+                for event in newly_found_evidence:
+                    data = event.data or {}
+                    eid = data.get("evidence_id")
+                    ev = evidence_by_id.get(eid) if eid is not None else None
+                    if ev is None:
+                        continue
+                    msg = {
+                        "type": "evidence_discovered",
+                        "tick": event.tick,
+                        "id": ev.id,
+                        "kind": ev.kind,
+                        "position": [
+                            round(ev.position.x, 1),
+                            round(ev.position.y, 1),
+                            round(ev.position.z, 1),
+                        ],
+                        "confidence": round(ev.confidence, 2),
+                        "heading": round(ev.heading, 3) if ev.heading is not None else None,
+                        "age_hours": ev.age_hours,
+                        "drone_id": event.drone_id,
+                    }
+                    payload = json.dumps(msg)
+                    disconnected: list[WebSocket] = []
+                    for ws in list(clients):
+                        try:
+                            await ws.send_text(payload)
+                        except Exception:
+                            disconnected.append(ws)
+                    for ws in disconnected:
+                        clients.discard(ws)
+                        client_chunks.pop(ws, None)
 
             # Evict stale chunks periodically
             if world.tick % 100 == 0:

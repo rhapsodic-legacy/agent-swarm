@@ -6,6 +6,7 @@
 
 import type {
   DroneState,
+  EvidenceMarker,
   IntelPin,
   MissionScenario,
   SurvivorState,
@@ -19,6 +20,11 @@ const SURVIVOR_COLOR = "#ff2200";
 const BASE_COLOR = "#ffaa00";
 const INTEL_PIN_COLOR = "#00c8ff";
 const INTEL_RADIUS_COLOR = "rgba(0, 200, 255, 0.5)";
+const EVIDENCE_COLORS: Record<string, string> = {
+  footprint: "#ffb060",
+  debris: "#cc3322",
+  signal_fire: "#ffee33",
+};
 
 export class Minimap {
   private container: HTMLDivElement;
@@ -86,7 +92,11 @@ export class Minimap {
     this.overviewImage = imgData;
   }
 
-  update(drones: DroneState[], survivors?: SurvivorState[]): void {
+  update(
+    drones: DroneState[],
+    survivors?: SurvivorState[],
+    evidence?: EvidenceMarker[],
+  ): void {
     if (!this.overview || !this.overviewImage) return;
 
     const ctx = this.ctx;
@@ -157,6 +167,27 @@ export class Minimap {
         const sx = (s.position[0] / ws) * MAP_SIZE;
         const sz = (s.position[2] / ws) * MAP_SIZE;
         ctx.fillRect(sx - 1, sz - 1, 3, 3);
+      }
+    }
+
+    // Draw discovered evidence — colored triangles, so they read as a
+    // distinct symbol vs. base/drones/survivors/intel pins.
+    if (evidence) {
+      for (const e of evidence) {
+        const ex = (e.position[0] / ws) * MAP_SIZE;
+        const ez = (e.position[2] / ws) * MAP_SIZE;
+        ctx.save();
+        ctx.fillStyle = EVIDENCE_COLORS[e.kind] ?? "#ffffff";
+        ctx.strokeStyle = "rgba(0, 0, 0, 0.8)";
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(ex, ez - 3);
+        ctx.lineTo(ex + 3, ez + 2);
+        ctx.lineTo(ex - 3, ez + 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
       }
     }
 

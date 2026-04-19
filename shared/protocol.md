@@ -102,6 +102,31 @@ new strategic directive.
 
 Disambiguate by presence of `mission` (scenario) vs `briefing` (directive).
 
+### `evidence_discovered`
+Sent when a drone finds a clue (footprint, debris, signal fire) during a
+mission that has an evidence trail. The backend has already applied the
+Bayesian posterior update to the PoC grid by the time this message is
+sent — the frontend just needs to render the marker and refresh its
+heatmap from the next `state_update`.
+
+```json
+{
+    "type": "evidence_discovered",
+    "tick": 1234,
+    "id": 2,
+    "kind": "footprint",
+    "position": [3140.0, 45.0, 2880.0],
+    "confidence": 0.6,
+    "heading": 1.57,
+    "age_hours": 1.5,
+    "drone_id": 7
+}
+```
+
+Kinds ship in Phase 3: `footprint` (directional), `debris` (ring),
+`signal_fire` (high-confidence circle). Additional kinds may appear
+later; the frontend should ignore unknown kinds rather than error.
+
 ### `agent_log`
 Debug information about agent decisions.
 

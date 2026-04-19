@@ -8,7 +8,7 @@ Units: meters for distance, seconds for time, percentage (0-100) for battery.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum, auto
+from enum import Enum, StrEnum, auto
 from typing import NamedTuple
 
 
@@ -71,6 +71,21 @@ class EventType(Enum):
     DRONE_COMMS_LOST = auto()
     DRONE_RETURNED = auto()
     ZONE_FULLY_EXPLORED = auto()
+    EVIDENCE_FOUND = auto()
+
+
+class EvidenceKind(StrEnum):
+    """Types of search evidence a drone can discover.
+
+    Phase 3 ships three kinds that exercise the core posterior-update
+    geometries (directional cone, drift ring, high-confidence circle).
+    Additional kinds (body, beacon_ping, vocal_signal, witness_report)
+    follow the same contract and will plug in later.
+    """
+
+    FOOTPRINT = "footprint"
+    DEBRIS = "debris"
+    SIGNAL_FIRE = "signal_fire"
 
 
 # Fog-of-war cell states
@@ -112,6 +127,42 @@ class Survivor:
     discovered_at_tick: int | None = None
     mobile: bool = False  # whether this survivor wanders
     speed: float = 0.5  # movement speed in m/s
+
+
+@dataclass(frozen=True)
+class Evidence:
+    """A clue planted at world-gen time, discoverable by drones.
+
+    Evidence is the bridge between the mission's ground truth (where
+    survivors actually are) and the PoC prior (where the planner thinks
+    they are). Each clue, when discovered, triggers a Bayesian posterior
+    update that re-focuses the belief map.
+
+    Attributes:
+        id: Unique identifier within the mission.
+        position: World-space location (Y is terrain elevation at plant time).
+        kind: One of the EvidenceKind values (footprint / debris / signal_fire).
+        confidence: 0-1 weight applied when the evidence updates the PoC.
+            High for fresh signal_fire (~0.95), moderate for footprints
+            (~0.6), lower for weathered debris (~0.4).
+        heading: Direction (radians, 0 = +Z/north, clockwise) the evidence
+            points toward. Used by directional kinds (footprint) to shape
+            the update as a cone downstream of the clue. None = isotropic.
+        age_hours: Estimated time since the clue was deposited. Affects
+            update geometry — older footprints spread the cone wider.
+        discovered, discovered_by, discovered_at_tick: Detection bookkeeping
+            (mirrors the Survivor pattern).
+    """
+
+    id: int
+    position: Vec3
+    kind: str  # EvidenceKind value
+    confidence: float = 0.7
+    heading: float | None = None
+    age_hours: float | None = None
+    discovered: bool = False
+    discovered_by: int | None = None
+    discovered_at_tick: int | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +231,10 @@ class WorldState:
     # Optional; None means search-theory-based routing is disabled.
     # See src/simulation/search_map.py for the SearchMap class.
     search_map: object = None  # SearchMap | None
+    # Evidence — clues planted by the mission that drones can find and use
+    # to update the PoC posterior. Empty in missions without an evidence
+    # trail (Phase 3 wires lost_hiker + aircraft_crash; others stay empty).
+    evidence: tuple[Evidence, ...] = ()
 
 
 @dataclass(frozen=True)

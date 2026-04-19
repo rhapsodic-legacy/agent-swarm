@@ -102,6 +102,31 @@ export interface SimEvent {
   survivor_id: number | null;
 }
 
+/** A clue discovered by a drone. Drives the posterior update + marker render. */
+export interface EvidenceMarker {
+  id: number;
+  kind: "footprint" | "debris" | "signal_fire" | string;
+  position: [number, number, number];
+  confidence: number;
+  heading: number | null;
+  age_hours: number | null;
+  discovered_by: number | null;
+  discovered_at_tick: number | null;
+}
+
+/** One-shot message fired the tick a drone finds evidence. */
+export interface EvidenceDiscovered {
+  type: "evidence_discovered";
+  tick: number;
+  id: number;
+  kind: "footprint" | "debris" | "signal_fire" | string;
+  position: [number, number, number];
+  confidence: number;
+  heading: number | null;
+  age_hours: number | null;
+  drone_id: number | null;
+}
+
 export interface StateUpdate {
   type: "state_update";
   tick: number;
@@ -113,6 +138,8 @@ export interface StateUpdate {
   all_survivors?: SurvivorState[];
   /** Probability-of-Containment grid (downsampled, sent every N ticks). */
   poc_grid?: PoCGrid;
+  /** Discovered evidence on the map. Empty for missions without an evidence trail. */
+  evidence?: EvidenceMarker[];
   fog_grid: FogData;
   comms_links: [number, number][];
   events: SimEvent[];
@@ -243,4 +270,9 @@ export interface WorldOverview {
   encoding: string;
 }
 
-export type ServerMessage = StateUpdate | MissionBriefing | ChunkTerrainData | WorldOverview;
+export type ServerMessage =
+  | StateUpdate
+  | MissionBriefing
+  | ChunkTerrainData
+  | WorldOverview
+  | EvidenceDiscovered;

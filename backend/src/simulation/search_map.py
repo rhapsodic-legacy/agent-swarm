@@ -56,7 +56,7 @@ class SearchMap:
     # ------------------------------------------------------------------
 
     @classmethod
-    def empty(cls, world_size: float, cell_size: float = 40.0) -> "SearchMap":
+    def empty(cls, world_size: float, cell_size: float = 40.0) -> SearchMap:
         """Create an empty (zero) map. Caller must seed a prior."""
         n = int(round(world_size / cell_size))
         return cls(
@@ -66,7 +66,7 @@ class SearchMap:
         )
 
     @classmethod
-    def uniform(cls, world_size: float, cell_size: float = 40.0) -> "SearchMap":
+    def uniform(cls, world_size: float, cell_size: float = 40.0) -> SearchMap:
         """Create a uniform prior — every cell equally likely. Total mass = 1."""
         sm = cls.empty(world_size, cell_size)
         sm.poc[:, :] = 1.0 / sm.poc.size
@@ -218,6 +218,240 @@ class SearchMap:
 
         mass_after = float(patch_new[mask].sum())
         return mass_before - mass_after
+
+    # ------------------------------------------------------------------
+    # Posterior update from evidence
+    # ------------------------------------------------------------------
+
+    def update_on_evidence(
+        self,
+        position: tuple[float, float],
+        kind: str,
+        *,
+        confidence: float = 0.7,
+        heading: float | None = None,
+    ) -> float:
+        """Re-shape the posterior after a drone discovers evidence.
+
+        Evidence is a multiplicative weight map overlaid on the current
+        PoC, then renormalized. Cells the evidence *supports* get boosted
+        (multiplier > 1); other cells get relatively deprecated.
+
+        The weight map geometry depends on the evidence kind:
+
+          * footprint: a forward cone along `heading`. Cells inside the
+            cone and within reach-distance get boosted; cells behind the
+            footprint (opposite heading) get mildly suppressed.
+          * debris: an isotropic ring at the expected drift distance.
+            Strongest boost at ring radius, falling off inside and outside.
+          * signal_fire: a tight high-confidence circle (active survivor
+            signaling — we're very close).
+
+        Returns the multiplicative strength actually applied (peak weight,
+        useful for logging/testing).
+
+        Args:
+            position: (x, z) world-space location of the evidence.
+            kind: EvidenceKind value ("footprint" / "debris" / "signal_fire").
+            confidence: 0-1 scale factor. 1.0 = strongest update; 0.0 = no-op.
+            heading: radians, 0 = +Z/north, clockwise. Required for
+                directional kinds (footprint); ignored otherwise.
+
+        Returns:
+            Peak weight applied (≥1.0 on updates, 0.0 on no-op).
+        """
+        if confidence <= 0.0:
+            return 0.0
+
+        weight = self._evidence_weight_map(position, kind, confidence, heading)
+        if weight is None:
+            return 0.0
+
+        # Multiplicative update + renormalize. Unlike failure-to-detect,
+        # evidence *redistributes* belief — total mass stays at 1.0, but
+        # the shape of the posterior changes.
+        before_mass = float(self.poc.sum())
+        self.poc = self.poc * weight
+        after_mass = float(self.poc.sum())
+        if after_mass > 1e-9 and before_mass > 1e-9:
+            self.poc *= np.float32(before_mass / after_mass)
+        return float(weight.max())
+
+    def _evidence_weight_map(
+        self,
+        position: tuple[float, float],
+        kind: str,
+        confidence: float,
+        heading: float | None,
+    ) -> np.ndarray | None:
+        """Build the multiplicative weight grid for an evidence update.
+
+        The grid has shape self.poc.shape and dtype float32. Values at 1.0
+        mean "no change at this cell"; > 1.0 means boost; < 1.0 means
+        suppress. The caller multiplies PoC by this and renormalizes.
+
+        Returns None if the evidence falls outside the grid entirely.
+        """
+        weight = np.ones_like(self.poc, dtype=np.float32)
+
+        px, pz = position
+        if not (0.0 <= px < self.world_size and 0.0 <= pz < self.world_size):
+            return None
+
+        if kind == "footprint":
+            # Directional cone: 800m radius, ±35° half-angle, boosted in
+            # the heading direction.
+            if heading is None:
+                heading = 0.0
+            self._apply_cone(
+                weight, px, pz, heading,
+                radius_m=800.0, half_angle=0.61,
+                peak=1.0 + 3.0 * confidence,
+            )
+        elif kind == "debris":
+            # Ring at ~400m, peak boost 2.5× at the ring, falling off.
+            self._apply_ring(
+                weight, px, pz,
+                ring_radius_m=400.0, sigma_m=200.0,
+                peak=1.0 + 1.5 * confidence,
+            )
+        elif kind == "signal_fire":
+            # Tight circle: 500m radius, very high boost at center
+            # (active survivor signaling → they're right there).
+            self._apply_gaussian_boost(
+                weight, px, pz, radius_m=500.0, peak=1.0 + 6.0 * confidence,
+            )
+        else:
+            # Unknown kind — isotropic moderate boost.
+            self._apply_gaussian_boost(
+                weight, px, pz, radius_m=400.0, peak=1.0 + 1.0 * confidence,
+            )
+
+        return weight
+
+    def _apply_gaussian_boost(
+        self,
+        weight: np.ndarray,
+        x: float,
+        z: float,
+        radius_m: float,
+        peak: float,
+    ) -> None:
+        """Add a Gaussian bump (peak at center, 1.0 at infinity) to `weight`."""
+        n = weight.shape[0]
+        cx, cz = self.world_to_cell(x, z)
+        sigma = max(radius_m / self.cell_size, 1.0)
+        patch_r = int(math.ceil(sigma * 3.0))
+        r_min = max(0, cz - patch_r)
+        r_max = min(n, cz + patch_r + 1)
+        c_min = max(0, cx - patch_r)
+        c_max = min(n, cx + patch_r + 1)
+        if r_min >= r_max or c_min >= c_max:
+            return
+
+        rr = np.arange(r_min, r_max, dtype=np.float32)[:, None]
+        cc = np.arange(c_min, c_max, dtype=np.float32)[None, :]
+        dist_sq = (rr - cz) ** 2 + (cc - cx) ** 2
+        bump = np.exp(-dist_sq / (2.0 * sigma * sigma)).astype(np.float32) * np.float32(peak - 1.0)
+        weight[r_min:r_max, c_min:c_max] += bump
+
+    def _apply_cone(
+        self,
+        weight: np.ndarray,
+        x: float,
+        z: float,
+        heading: float,
+        radius_m: float,
+        half_angle: float,
+        peak: float,
+    ) -> None:
+        """Boost cells inside a forward cone; mildly suppress cells behind.
+
+        Heading uses the project convention: 0 = +Z/north, clockwise.
+        Vector components: (sin(h), cos(h)) in (x, z).
+        """
+        n = weight.shape[0]
+        cx, cz = self.world_to_cell(x, z)
+        radius_cells = int(math.ceil(radius_m / self.cell_size))
+        r_min = max(0, cz - radius_cells)
+        r_max = min(n, cz + radius_cells + 1)
+        c_min = max(0, cx - radius_cells)
+        c_max = min(n, cx + radius_cells + 1)
+        if r_min >= r_max or c_min >= c_max:
+            return
+
+        rr = np.arange(r_min, r_max, dtype=np.float32)[:, None]
+        cc = np.arange(c_min, c_max, dtype=np.float32)[None, :]
+
+        # Vectors from (cx, cz) to each cell, in (x, z) = (col, row).
+        dx = cc - cx
+        dz = rr - cz
+        dist = np.sqrt(dx * dx + dz * dz)
+        # Avoid div-by-zero at the origin cell
+        dist_safe = np.maximum(dist, 1e-6)
+
+        # Heading direction vector (x, z) = (sin(h), cos(h))
+        hx = math.sin(heading)
+        hz = math.cos(heading)
+        # dot(normalized_cell_vec, heading_vec)
+        cos_angle = (dx * hx + dz * hz) / dist_safe
+
+        # Forward cone: inside the half-angle AND within radius.
+        half_cos = math.cos(half_angle)
+        in_cone = (cos_angle >= half_cos) & (dist <= radius_cells)
+        # Falloff with distance (linear from peak at origin to 1.0 at radius).
+        falloff = np.clip(1.0 - dist / max(radius_cells, 1.0), 0.0, 1.0)
+        cone_boost = in_cone.astype(np.float32) * falloff * np.float32(peak - 1.0)
+
+        # Behind: mild suppression (multiplier < 1). Cells with cos_angle
+        # below -half_cos are "behind" the footprint.
+        behind = (cos_angle <= -half_cos) & (dist <= radius_cells)
+        behind_suppress = behind.astype(np.float32) * falloff * np.float32(-0.4)
+
+        patch = weight[r_min:r_max, c_min:c_max]
+        # Multiplicative on the boosted side, additive suppression on the
+        # behind side. We add to patch (starts at 1.0):
+        #   boost > 0 → pushes multiplier above 1
+        #   suppress < 0 → pushes multiplier toward ~0.6
+        patch += cone_boost
+        patch += behind_suppress
+        # Floor so we never zero out a cell entirely — prior belief should
+        # never be annihilated by a single piece of evidence.
+        np.maximum(patch, np.float32(0.2), out=patch)
+        weight[r_min:r_max, c_min:c_max] = patch
+
+    def _apply_ring(
+        self,
+        weight: np.ndarray,
+        x: float,
+        z: float,
+        ring_radius_m: float,
+        sigma_m: float,
+        peak: float,
+    ) -> None:
+        """Apply a Gaussian ring (peak at ring_radius, falls off either side)."""
+        n = weight.shape[0]
+        cx, cz = self.world_to_cell(x, z)
+        outer_r_cells = int(math.ceil((ring_radius_m + 3.0 * sigma_m) / self.cell_size))
+        r_min = max(0, cz - outer_r_cells)
+        r_max = min(n, cz + outer_r_cells + 1)
+        c_min = max(0, cx - outer_r_cells)
+        c_max = min(n, cx + outer_r_cells + 1)
+        if r_min >= r_max or c_min >= c_max:
+            return
+
+        ring_cells = ring_radius_m / self.cell_size
+        sigma_cells = max(sigma_m / self.cell_size, 1.0)
+
+        rr = np.arange(r_min, r_max, dtype=np.float32)[:, None]
+        cc = np.arange(c_min, c_max, dtype=np.float32)[None, :]
+        dist = np.sqrt((rr - cz) ** 2 + (cc - cx) ** 2)
+        dist_from_ring = dist - np.float32(ring_cells)
+        ring_profile = np.exp(
+            -(dist_from_ring * dist_from_ring) / (2.0 * sigma_cells * sigma_cells)
+        )
+        boost = ring_profile.astype(np.float32) * np.float32(peak - 1.0)
+        weight[r_min:r_max, c_min:c_max] += boost
 
     # ------------------------------------------------------------------
     # Posterior inspection

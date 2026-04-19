@@ -10,6 +10,7 @@ import type {
   ChunkTerrainData,
   WorldOverview,
   MissionBriefing,
+  EvidenceDiscovered,
 } from "./types";
 
 export type StateCallback = (state: StateUpdate) => void;
@@ -18,6 +19,7 @@ export type ChatCallback = (message: string) => void;
 export type ChunkCallback = (chunk: ChunkTerrainData) => void;
 export type OverviewCallback = (overview: WorldOverview) => void;
 export type MissionBriefingCallback = (msg: MissionBriefing) => void;
+export type EvidenceCallback = (msg: EvidenceDiscovered) => void;
 
 export class SwarmClient {
   private ws: WebSocket | null = null;
@@ -30,6 +32,7 @@ export class SwarmClient {
   private onChunk: ChunkCallback | null = null;
   private onOverview: OverviewCallback | null = null;
   private onMissionBriefing: MissionBriefingCallback | null = null;
+  private onEvidence: EvidenceCallback | null = null;
   private terrain: TerrainData | null = null;
   private latestState: StateUpdate | null = null;
   private shouldReconnect = true;
@@ -98,6 +101,10 @@ export class SwarmClient {
     this.onMissionBriefing = callback;
   }
 
+  onEvidenceDiscovered(callback: EvidenceCallback): void {
+    this.onEvidence = callback;
+  }
+
   getTerrain(): TerrainData | null {
     return this.terrain;
   }
@@ -162,6 +169,10 @@ export class SwarmClient {
         } else if (msgType === "mission_briefing") {
           if (this.onMissionBriefing) {
             this.onMissionBriefing(raw as unknown as MissionBriefing);
+          }
+        } else if (msgType === "evidence_discovered") {
+          if (this.onEvidence) {
+            this.onEvidence(raw as unknown as EvidenceDiscovered);
           }
         }
       };

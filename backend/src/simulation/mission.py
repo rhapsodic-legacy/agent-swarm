@@ -29,8 +29,7 @@ from typing import Protocol
 import numpy as np
 
 from src.simulation.search_map import SearchMap
-from src.simulation.types import Vec3
-
+from src.simulation.types import Evidence, EvidenceKind, Vec3
 
 # Survivor clusters use the same 4-tuple format the ChunkedWorld already
 # expects: (center_x, center_z, radius_meters, weight). Weight is a fraction
@@ -78,6 +77,10 @@ class SearchMission:
     # Anchor positions for the briefing overlay (last-known, trailhead, etc.).
     # Renderable as map pins on the frontend.
     intel_pins: list[dict] = field(default_factory=list)
+    # Planted clues (footprints, debris, signal fires) drones can discover.
+    # Each evidence triggers a Bayesian posterior update when found. Empty
+    # for missions that don't model a survivor trail.
+    evidence: list[Evidence] = field(default_factory=list)
 
     def seed_poc_grid(self, grid: SearchMap) -> None:
         """Seed the PoC prior on the search map.
@@ -159,6 +162,114 @@ def _cone_clusters(
 
 
 # ---------------------------------------------------------------------------
+# Evidence trail generation
+# ---------------------------------------------------------------------------
+
+
+def _plant_trail_evidence(
+    start_x: float,
+    start_z: float,
+    end_x: float,
+    end_z: float,
+    world_size: int,
+    rng: np.random.Generator,
+    *,
+    signal_fire_at_end: bool = True,
+) -> list[Evidence]:
+    """Plant a sparse line of evidence from `start` toward `end`.
+
+    The trail models the survivor's actual path between two mission
+    anchors — e.g., last-known position → impact site for an aircraft
+    crash, or trailhead → current hiker position for a lost hiker. Drones
+    that happen to pass near these clues discover them and the PoC
+    posterior narrows in real time.
+
+    Returns a small mix of:
+      * 2–3 footprints spaced along the trail (directional, heading
+        toward `end`)
+      * 1 debris cluster near the midpoint (isotropic ring)
+      * 1 signal_fire at the end (high confidence, near the survivors)
+
+    Kept deliberately sparse so discovery remains a visible event, not
+    ambient noise. All positions use y=0; the planter doesn't know terrain
+    height and the frontend samples elevation at render time.
+    """
+    evidence: list[Evidence] = []
+    dx = end_x - start_x
+    dz = end_z - start_z
+    trail_len = math.hypot(dx, dz)
+    if trail_len < 1.0:
+        return evidence
+
+    heading = math.atan2(dx, dz)  # heading 0 = +Z/north, atan2(east, north)
+
+    # Footprints along the trail at 35% / 60% / 80% of its length. Each
+    # point jittered perpendicular to the trail so they don't look like a
+    # ruler-straight line.
+    perp_x = -dz / trail_len
+    perp_z = dx / trail_len
+    next_id = 0
+    for frac, age in [(0.35, 1.5), (0.60, 1.0), (0.80, 0.5)]:
+        base_x = start_x + dx * frac
+        base_z = start_z + dz * frac
+        jitter = float(rng.uniform(-60.0, 60.0))
+        fx = base_x + perp_x * jitter
+        fz = base_z + perp_z * jitter
+        fx, fz = _clamp_to_world(fx, fz, world_size, margin=30.0)
+        evidence.append(
+            Evidence(
+                id=next_id,
+                position=Vec3(fx, 0.0, fz),
+                kind=EvidenceKind.FOOTPRINT.value,
+                confidence=0.6,
+                heading=heading,
+                age_hours=age,
+            )
+        )
+        next_id += 1
+
+    # Debris cluster near the midpoint — isotropic, slightly off-axis so
+    # it's a distinct find rather than colocated with a footprint.
+    mid_frac = 0.50
+    mid_x = start_x + dx * mid_frac
+    mid_z = start_z + dz * mid_frac
+    mid_jitter = float(rng.uniform(80.0, 180.0))
+    mid_sign = 1.0 if rng.random() < 0.5 else -1.0
+    mx = mid_x + perp_x * mid_jitter * mid_sign
+    mz = mid_z + perp_z * mid_jitter * mid_sign
+    mx, mz = _clamp_to_world(mx, mz, world_size, margin=30.0)
+    evidence.append(
+        Evidence(
+            id=next_id,
+            position=Vec3(mx, 0.0, mz),
+            kind=EvidenceKind.DEBRIS.value,
+            confidence=0.45,
+            heading=None,
+            age_hours=2.0,
+        )
+    )
+    next_id += 1
+
+    # Signal fire near the endpoint — high confidence survivor indicator.
+    if signal_fire_at_end:
+        sf_x = end_x + float(rng.uniform(-120.0, 120.0))
+        sf_z = end_z + float(rng.uniform(-120.0, 120.0))
+        sf_x, sf_z = _clamp_to_world(sf_x, sf_z, world_size, margin=30.0)
+        evidence.append(
+            Evidence(
+                id=next_id,
+                position=Vec3(sf_x, 0.0, sf_z),
+                kind=EvidenceKind.SIGNAL_FIRE.value,
+                confidence=0.9,
+                heading=None,
+                age_hours=0.25,
+            )
+        )
+
+    return evidence
+
+
+# ---------------------------------------------------------------------------
 # Mission templates
 # ---------------------------------------------------------------------------
 
@@ -222,6 +333,20 @@ def aircraft_crash(world_size: int, seed: int) -> SearchMission:
         {"label": "Inferred impact area", "kind": "impact", "position": [crash_x, crash_z]},
     ]
 
+    # Evidence trail: from the last-radar position along the flight path
+    # toward the impact. Debris strewn between, signal fire near impact
+    # where walking survivors would gather.
+    evidence_rng = np.random.default_rng(seed + 2001)
+    evidence = _plant_trail_evidence(
+        start_x=last_radar_x,
+        start_z=last_radar_z,
+        end_x=crash_x,
+        end_z=crash_z,
+        world_size=world_size,
+        rng=evidence_rng,
+        signal_fire_at_end=True,
+    )
+
     return SearchMission(
         name="aircraft_crash",
         title="Aircraft Crash — Mountain SAR",
@@ -243,6 +368,7 @@ def aircraft_crash(world_size: int, seed: int) -> SearchMission:
         world_size=world_size,
         seed=seed,
         intel_pins=intel_pins,
+        evidence=evidence,
     )
 
 
@@ -315,6 +441,24 @@ def lost_hiker(world_size: int, seed: int) -> SearchMission:
         {"label": "Forward command post", "kind": "fcp", "position": [base_x, base_z]},
     ]
 
+    # Evidence trail: from last cell ping along the trail bearing to the
+    # mid-reach cluster (the 0.6 reach-factor one, which has the highest
+    # weight). Footprints point forward along the trail.
+    primary_cluster_d = reach_radius * 0.6
+    primary_cx = last_ping_x + math.cos(trail_bearing) * primary_cluster_d
+    primary_cz = last_ping_z + math.sin(trail_bearing) * primary_cluster_d
+    primary_cx, primary_cz = _clamp_to_world(primary_cx, primary_cz, world_size)
+    evidence_rng = np.random.default_rng(seed + 2002)
+    evidence = _plant_trail_evidence(
+        start_x=last_ping_x,
+        start_z=last_ping_z,
+        end_x=primary_cx,
+        end_z=primary_cz,
+        world_size=world_size,
+        rng=evidence_rng,
+        signal_fire_at_end=True,
+    )
+
     return SearchMission(
         name="lost_hiker",
         title="Lost Hiker — Wilderness SAR",
@@ -337,6 +481,7 @@ def lost_hiker(world_size: int, seed: int) -> SearchMission:
         world_size=world_size,
         seed=seed,
         intel_pins=intel_pins,
+        evidence=evidence,
     )
 
 

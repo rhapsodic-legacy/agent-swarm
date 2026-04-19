@@ -15,6 +15,7 @@ from src.simulation.drone import (
     check_drone_failures,
     compute_comms_links,
     create_drone_fleet,
+    detect_evidence,
     detect_survivors,
     update_drone_battery,
     update_drone_physics,
@@ -27,6 +28,7 @@ from src.simulation.types import (
     Drone,
     DroneStatus,
     EventType,
+    Evidence,
     SimConfig,
     SimEvent,
     Vec3,
@@ -415,6 +417,54 @@ def tick_chunked(
                         if cs.id == sid:
                             chunk.survivors[ci] = survivors[idx]
 
+    # --- 5b. Detect evidence (clues planted by the mission) ---
+    # Each newly-discovered clue triggers a Bayesian posterior update on
+    # the PoC grid below (step 7b). Keep the evidence list immutable-style
+    # by rebuilding it.
+    evidence_list: list[Evidence] = list(world.evidence)
+    evidence_found_this_tick: list[Evidence] = []
+    if evidence_list:
+        evidence_by_id = {e.id: i for i, e in enumerate(evidence_list)}
+        for d in drones:
+            if d.status == DroneStatus.FAILED:
+                continue
+            detected_ids = detect_evidence(
+                d,
+                tuple(evidence_list),
+                biome_fn=cw.get_biome_at,
+                config=config,
+            )
+            for eid in detected_ids:
+                idx = evidence_by_id.get(eid)
+                if idx is None:
+                    continue
+                e_old = evidence_list[idx]
+                if e_old.discovered:
+                    continue
+                e_new = replace(
+                    e_old,
+                    discovered=True,
+                    discovered_by=d.id,
+                    discovered_at_tick=new_tick,
+                )
+                evidence_list[idx] = e_new
+                evidence_found_this_tick.append(e_new)
+                events.append(
+                    SimEvent(
+                        EventType.EVIDENCE_FOUND,
+                        new_tick,
+                        drone_id=d.id,
+                        data={
+                            "evidence_id": e_new.id,
+                            "kind": e_new.kind,
+                            "position": [e_new.position.x, e_new.position.y, e_new.position.z],
+                            "confidence": e_new.confidence,
+                            "heading": e_new.heading,
+                            "age_hours": e_new.age_hours,
+                        },
+                    )
+                )
+
     # --- 6. Compute communication links ---
     drones_tuple = tuple(drones)
     comms_links = compute_comms_links(drones_tuple)
@@ -449,6 +499,17 @@ def tick_chunked(
                 center_world=(d.position.x, d.position.z),
                 radius_meters=d.sensor_range,
                 pod=base_pod,
+            )
+
+        # Evidence posterior: each discovery re-shapes the PoC toward the
+        # geometry implied by the clue (cone for footprints, ring for
+        # debris, tight circle for signal fires).
+        for e in evidence_found_this_tick:
+            sm.update_on_evidence(
+                position=(e.position.x, e.position.z),
+                kind=e.kind,
+                confidence=e.confidence,
+                heading=e.heading,
             )
 
     # Update the coarse global fog grid (used by agent AI)
@@ -510,6 +571,7 @@ def tick_chunked(
         base_position=world.base_position,
         tick_rate=world.tick_rate,
         search_map=world.search_map,
+        evidence=tuple(evidence_list),
     )
 
 

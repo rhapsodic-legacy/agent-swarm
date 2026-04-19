@@ -18,6 +18,7 @@ from src.simulation.types import (
     Biome,
     Drone,
     DroneStatus,
+    Evidence,
     SimConfig,
     Survivor,
     Vec3,
@@ -335,6 +336,87 @@ def detect_survivors(
         )
         if dist_xz < effective_range:
             detected.append(s.id)
+
+    return detected
+
+
+# ---------------------------------------------------------------------------
+# 4b. Evidence detection
+# ---------------------------------------------------------------------------
+
+# Per-kind base detection range (meters). Signal fires are visible from
+# much farther away than footprints — a smoking fire is the whole point.
+_EVIDENCE_BASE_RANGE: dict[str, float] = {
+    "footprint": 60.0,
+    "debris": 120.0,
+    "signal_fire": 400.0,
+}
+
+# Biome detection multiplier for evidence. Mostly tracks the survivor
+# detection table, but signal fires are distinctive enough that dense
+# biomes hurt them less.
+_EVIDENCE_BIOME_MULT: dict[int, float] = {
+    Biome.WATER.value: 0.0,
+    Biome.BEACH.value: 1.0,
+    Biome.FOREST.value: 0.45,
+    Biome.URBAN.value: 0.65,
+    Biome.MOUNTAIN.value: 0.75,
+    Biome.SNOW.value: 1.05,
+}
+
+
+def detect_evidence(
+    drone: Drone,
+    evidence: tuple[Evidence, ...],
+    biome_map: np.ndarray | None = None,
+    *,
+    biome_fn: BiomeFn | None = None,
+    config: SimConfig | None = None,
+) -> list[int]:
+    """Return evidence IDs newly detected by `drone` this tick.
+
+    Evidence detection mirrors `detect_survivors` but uses per-kind base
+    ranges and is lighter on the altitude/LOS model — clues are often
+    larger/brighter than a person, so a simple range + biome check is
+    good enough for the posterior-update mechanic.
+    """
+    if not drone.sensor_active or drone.status is DroneStatus.FAILED:
+        return []
+
+    if config is None:
+        config = SimConfig()
+
+    detected: list[int] = []
+
+    for e in evidence:
+        if e.discovered:
+            continue
+
+        dx = drone.position.x - e.position.x
+        dz = drone.position.z - e.position.z
+        dist_xz = math.sqrt(dx * dx + dz * dz)
+
+        base_range = _EVIDENCE_BASE_RANGE.get(e.kind, 80.0)
+
+        # Biome at the evidence position
+        biome_val = Biome.BEACH.value
+        if biome_fn is not None:
+            biome_val = int(biome_fn(e.position.x, e.position.z))
+        elif biome_map is not None:
+            s_row = int(min(max(e.position.z, 0), biome_map.shape[0] - 1))
+            s_col = int(min(max(e.position.x, 0), biome_map.shape[1] - 1))
+            biome_val = int(biome_map[s_row, s_col])
+        biome_mult = _EVIDENCE_BIOME_MULT.get(biome_val, 0.6)
+
+        # Weather dampens visual detection globally; signal fires see less
+        # of this penalty (heat/light punches through).
+        weather_mult = config.weather_visibility
+        if e.kind == "signal_fire":
+            weather_mult = 0.5 + 0.5 * config.weather_visibility
+
+        effective_range = base_range * biome_mult * weather_mult
+        if dist_xz < effective_range:
+            detected.append(e.id)
 
     return detected
 
