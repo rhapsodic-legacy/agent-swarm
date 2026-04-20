@@ -624,4 +624,4 @@ window.addEventListener("keydown", (e: KeyboardEvent) => {
 
 console.log("[DroneSwarm] Frontend initialized — connecting to backend...");
 console.log("[DroneSwarm] Controls: Space=pause, 1/2/3=speed, N=new sim, T=chat");
-console.log("[DroneSwarm] Click drone to select, Right-click terrain to send drone");
+console.log("[DroneSwarm] Click drone to select, Right-click terrain to send drone, X=hold, B=RTB");

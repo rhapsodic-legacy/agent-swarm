@@ -491,8 +491,10 @@ async def simulation_loop() -> None:
             # Get AI agent commands
             agent_commands = coordinator.update(world, sim_config)
 
-            # Merge with human commands (human overrides take priority)
-            commands = list(pending_commands) + agent_commands
+            # Human commands apply LAST so they win within the tick —
+            # _apply_command iterates in order and later writes overwrite
+            # earlier ones. Documented contract: human overrides agent.
+            commands = agent_commands + list(pending_commands)
             pending_commands = []
 
             # Tick with chunked terrain

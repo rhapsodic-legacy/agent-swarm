@@ -155,6 +155,15 @@ Human-issued command.
 }
 ```
 
+Supported `command` values:
+- `move_to` — fly to `target` `[x, z]`.
+- `hold_position` — hover in place until another command is issued. `target` is ignored.
+- `return_to_base` — set status to RETURNING and head to base. `target` is ignored.
+
+`hold_position` and `return_to_base` are "sticky": the AI coordinator will
+not reassign the drone while it is holding or returning. Issuing a fresh
+`move_to` resumes autonomous behavior.
+
 ### `zone_command`
 Define or modify a search zone.
 

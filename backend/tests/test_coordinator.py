@@ -50,6 +50,21 @@ def test_coordinator_initializes_with_correct_phase():
 # ---------------------------------------------------------------------------
 
 
+def test_coordinator_skips_holding_drones():
+    """A drone with current_task='holding' must not be reassigned by the
+    coordinator — the human override is authoritative until a new command."""
+    world = create_world(_CFG)
+    drones = list(world.drones)
+    drones[0] = replace(drones[0], current_task="holding")
+    world = replace(world, drones=tuple(drones))
+
+    coord = SwarmCoordinator(_CFG)
+    commands = coord.update(world, _CFG)
+
+    commanded_ids = {cmd.drone_id for cmd in commands}
+    assert 0 not in commanded_ids, "coordinator should skip drone 0 while it is holding"
+
+
 def test_update_returns_commands_for_active_drones():
     world = create_world(_CFG)
     coord = SwarmCoordinator(_CFG)

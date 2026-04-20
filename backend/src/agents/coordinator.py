@@ -257,6 +257,10 @@ class SwarmCoordinator:
             if drone.status == DroneStatus.RETURNING:
                 continue
 
+            # Human-issued hold — respect until the operator issues a new command.
+            if drone.current_task == "holding":
+                continue
+
             agent = self.agents[drone.id]
 
             # Smart battery check

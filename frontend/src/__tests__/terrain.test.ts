@@ -6,7 +6,7 @@
  *   - FogOfWarRenderer must track initialization state correctly
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach } from "vitest";
 import type { ChunkTerrainData } from "@/network/types";
 
 // ---------------------------------------------------------------------------

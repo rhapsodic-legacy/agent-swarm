@@ -199,7 +199,7 @@ class Terrain:
 class Command:
     """A command issued by a human or agent."""
 
-    type: str  # "move_to", "search_area", "return_to_base", "override", "set_priority"
+    type: str  # "move_to", "search_area", "return_to_base", "hold_position", "override", "set_priority"
     drone_id: int | None = None
     target: Vec3 | None = None
     zone_id: str | None = None

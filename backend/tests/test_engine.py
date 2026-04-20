@@ -212,6 +212,51 @@ def test_return_to_base_command():
     assert drone.current_task == "returning"
 
 
+def test_hold_position_command():
+    """hold_position should park the drone at its current position and mark
+    current_task='holding' so the coordinator will skip reassignment."""
+    world = create_world(_SMALL_CFG)
+    # Give the drone a target so we can observe it being cleared.
+    drone_before = world.drones[0]
+    moving_cmd = Command(type="move_to", drone_id=0, target=Vec3(10, 0, 10))
+    dt = 1.0 / _SMALL_CFG.tick_rate
+    world = tick(world, dt, commands=[moving_cmd], config=_SMALL_CFG)
+    assert world.drones[0].current_task == "moving"
+
+    hold_cmd = Command(type="hold_position", drone_id=0)
+    world = tick(world, dt, commands=[hold_cmd], config=_SMALL_CFG)
+
+    held = world.drones[0]
+    assert held.current_task == "holding"
+    assert held.target is not None
+    # Hold target is set to the drone's position at the tick the command
+    # was applied — horizontal distance between them should be tiny.
+    dx = held.target.x - held.position.x
+    dz = held.target.z - held.position.z
+    assert (dx * dx + dz * dz) ** 0.5 < drone_before.max_speed * dt * 2
+
+    # Subsequent ticks with no commands: drone should hover (near-zero horiz velocity).
+    world = _tick_n(world, 5)
+    hovering = world.drones[0]
+    horiz_speed = (hovering.velocity.x ** 2 + hovering.velocity.z ** 2) ** 0.5
+    assert horiz_speed < 1.0
+
+
+def test_hold_position_ignored_for_failed_drone():
+    world = create_world(_SMALL_CFG)
+    from dataclasses import replace
+
+    drones = list(world.drones)
+    drones[0] = replace(drones[0], status=DroneStatus.FAILED)
+    world = replace(world, drones=tuple(drones))
+
+    hold_cmd = Command(type="hold_position", drone_id=0)
+    dt = 1.0 / _SMALL_CFG.tick_rate
+    world2 = tick(world, dt, commands=[hold_cmd], config=_SMALL_CFG)
+    # Failed drone should not be marked holding.
+    assert world2.drones[0].current_task != "holding"
+
+
 # ---------------------------------------------------------------------------
 # Survivor discovery
 # ---------------------------------------------------------------------------

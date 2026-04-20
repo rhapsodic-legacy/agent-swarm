@@ -74,7 +74,7 @@ describe("Visual survivor rendering", () => {
       await new Promise((r) => setTimeout(r, 5000));
 
       // Screenshot BEFORE god mode (baseline)
-      const beforeBuffer = await page.screenshot({ encoding: "binary" });
+      await page.screenshot({ encoding: "binary" });
 
       // Press G to enable god mode
       await page.keyboard.press("g");

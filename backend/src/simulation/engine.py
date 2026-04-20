@@ -235,6 +235,17 @@ def _apply_command(drones: list[Drone], cmd: Command) -> list[Drone]:
                 current_task="searching",
             )
 
+    elif cmd.type == "hold_position" and cmd.drone_id is not None:
+        idx = cmd.drone_id
+        if 0 <= idx < len(drones) and drones[idx].status == DroneStatus.ACTIVE:
+            # Target = current position → physics hovers in place.
+            # current_task="holding" is the sticky signal coordinator watches.
+            drones[idx] = replace(
+                drones[idx],
+                target=drones[idx].position,
+                current_task="holding",
+            )
+
     return drones
 
 

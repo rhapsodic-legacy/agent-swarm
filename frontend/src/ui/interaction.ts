@@ -4,7 +4,8 @@
  * Responsibilities:
  *  - Drone selection via left-click (screen-space proximity picking)
  *  - Click-to-move via right-click or shift+click (raycast against ground plane)
- *  - Selection HUD overlay (drone info panel)
+ *  - Selection HUD overlay (drone info panel + Hold / RTB buttons)
+ *  - Keyboard overrides: X = hold_position, B = return_to_base (when selected)
  *  - Terrain click indicators (pulsing target markers)
  */
 
@@ -115,8 +116,11 @@ function ensureHUDElement(): HTMLDivElement {
     fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     fontSize: "13px",
     lineHeight: "1.5",
-    minWidth: "200px",
-    pointerEvents: "none",
+    minWidth: "220px",
+    // pointer-events enabled so the Hold / RTB buttons are clickable.
+    // The HUD element is a separate DOM node so click events don't
+    // reach the canvas underneath.
+    pointerEvents: "auto",
     zIndex: "100",
     display: "none",
     backdropFilter: "blur(4px)",
@@ -188,6 +192,7 @@ export class InteractionManager {
   private readonly handlePointerDown: (e: PointerEvent) => void;
   private readonly handlePointerUp: (e: PointerEvent) => void;
   private readonly handleContextMenu: (e: Event) => void;
+  private readonly handleKeyDown: (e: KeyboardEvent) => void;
 
   // --- Drag detection: distinguish click from drag for OrbitControls compat ---
   private pointerDownPos: { x: number; y: number } | null = null;
@@ -217,10 +222,12 @@ export class InteractionManager {
     };
     this.handlePointerUp = this.onPointerUp.bind(this);
     this.handleContextMenu = (e: Event) => e.preventDefault();
+    this.handleKeyDown = this.onKeyDown.bind(this);
 
     this.domElement.addEventListener("pointerdown", this.handlePointerDown);
     this.domElement.addEventListener("pointerup", this.handlePointerUp);
     this.domElement.addEventListener("contextmenu", this.handleContextMenu);
+    window.addEventListener("keydown", this.handleKeyDown);
   }
 
   // -----------------------------------------------------------------------
@@ -250,6 +257,7 @@ export class InteractionManager {
     this.domElement.removeEventListener("pointerdown", this.handlePointerDown);
     this.domElement.removeEventListener("pointerup", this.handlePointerUp);
     this.domElement.removeEventListener("contextmenu", this.handleContextMenu);
+    window.removeEventListener("keydown", this.handleKeyDown);
 
     // Selection ring.
     this.scene.remove(this.selectionRing);
@@ -376,6 +384,38 @@ export class InteractionManager {
     this.spawnMoveIndicator(intersection);
   }
 
+  // -----------------------------------------------------------------------
+  // Override Commands (Hold / Return to Base)
+  // -----------------------------------------------------------------------
+
+  private sendHoldPosition(): void {
+    if (this.selectedDroneId === null) return;
+    this.client.sendCommand("hold_position", this.selectedDroneId);
+  }
+
+  private sendReturnToBase(): void {
+    if (this.selectedDroneId === null) return;
+    this.client.sendCommand("return_to_base", this.selectedDroneId);
+  }
+
+  private onKeyDown(event: KeyboardEvent): void {
+    if (this.selectedDroneId === null) return;
+    // Skip if user is typing into any input/textarea (chat, settings, etc.).
+    const tag = document.activeElement?.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    // Ignore modified keystrokes so global app shortcuts aren't shadowed.
+    if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+    const key = event.key.toLowerCase();
+    if (key === "x") {
+      event.preventDefault();
+      this.sendHoldPosition();
+    } else if (key === "b") {
+      event.preventDefault();
+      this.sendReturnToBase();
+    }
+  }
+
   private spawnMoveIndicator(position: THREE.Vector3): void {
     const mesh = createMoveIndicatorMesh();
     // Place slightly above ground to avoid z-fighting.
@@ -481,7 +521,15 @@ export class InteractionManager {
 
     const statusColor = getStatusColor(drone.status);
     const batteryColor = getBatteryColor(drone.battery);
+    const taskColor = getTaskColor(drone.current_task);
     const pos = drone.position;
+
+    // Disable buttons when they can't have an effect.
+    const isFailed = drone.status === "failed";
+    const isReturning = drone.status === "returning";
+    const isHolding = drone.current_task === "holding";
+    const holdDisabled = isFailed || isReturning || isHolding;
+    const rtbDisabled = isFailed || isReturning;
 
     this.hudElement.innerHTML = `
       <div style="margin-bottom: 6px; font-size: 14px; color: #00ffff; font-weight: bold;">
@@ -493,7 +541,7 @@ export class InteractionManager {
         <span style="color: #888;">Battery</span>
         <span style="color: ${batteryColor};">${drone.battery.toFixed(0)}%</span>
         <span style="color: #888;">Task</span>
-        <span>${drone.current_task || "idle"}</span>
+        <span style="color: ${taskColor};">${(drone.current_task || "idle").toUpperCase()}</span>
         <span style="color: #888;">Position</span>
         <span>${pos[0].toFixed(1)}, ${pos[1].toFixed(1)}, ${pos[2].toFixed(1)}</span>
         ${
@@ -507,7 +555,21 @@ export class InteractionManager {
         <span style="color: #888;">Comms</span>
         <span>${drone.comms_active ? "ON" : "OFF"}</span>
       </div>
+      <div style="display: flex; gap: 6px; margin-top: 10px;">
+        <button id="btn-hold" ${holdDisabled ? "disabled" : ""}
+                style="${buttonStyle(holdDisabled)}">Hold (X)</button>
+        <button id="btn-rtb" ${rtbDisabled ? "disabled" : ""}
+                style="${buttonStyle(rtbDisabled)}">RTB (B)</button>
+      </div>
+      <div style="margin-top: 6px; font-size: 11px; color: #666;">
+        Right-click terrain to send waypoint
+      </div>
     `;
+
+    const holdBtn = this.hudElement.querySelector("#btn-hold");
+    const rtbBtn = this.hudElement.querySelector("#btn-rtb");
+    holdBtn?.addEventListener("click", () => this.sendHoldPosition());
+    rtbBtn?.addEventListener("click", () => this.sendReturnToBase());
   }
 }
 
@@ -532,4 +594,39 @@ function getBatteryColor(battery: number): string {
   if (battery > 60) return "#44ff44";
   if (battery > 30) return "#ffcc00";
   return "#ff4444";
+}
+
+function getTaskColor(task: string | undefined): string {
+  if (task === "holding") return "#00ffff";
+  if (task === "returning") return "#ffcc00";
+  return "#e0e0e0";
+}
+
+function buttonStyle(disabled: boolean): string {
+  const base = [
+    "flex: 1",
+    "padding: 6px 8px",
+    "font-family: inherit",
+    "font-size: 12px",
+    "font-weight: bold",
+    "border-radius: 4px",
+    "cursor: pointer",
+    "text-transform: uppercase",
+    "letter-spacing: 0.5px",
+  ];
+  if (disabled) {
+    base.push(
+      "background: rgba(40, 40, 60, 0.5)",
+      "border: 1px solid rgba(100, 100, 120, 0.3)",
+      "color: #555",
+      "cursor: not-allowed",
+    );
+  } else {
+    base.push(
+      "background: rgba(0, 255, 255, 0.1)",
+      "border: 1px solid rgba(0, 255, 255, 0.5)",
+      "color: #00ffff",
+    );
+  }
+  return base.join("; ");
 }
