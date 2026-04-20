@@ -1,4 +1,4 @@
-# Autonomous Drone Swarm Coordination Simulator 
+# Autonomous Drone Swarm Coordination Simulator  
 
 A real-time multi-agent simulation of autonomous drones performing search-and-rescue over procedurally generated terrain. Features a three-tier hybrid AI architecture, browser-based 3D visualization with fog-of-war, and human-in-the-loop interaction via natural language.
 
