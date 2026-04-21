@@ -127,6 +127,14 @@ export interface EvidenceDiscovered {
   drone_id: number | null;
 }
 
+/** A user-drawn priority zone (rectangular, XZ polygon). */
+export interface ZoneData {
+  zone_id: string;
+  polygon: [number, number][];
+  priority: "high" | "low" | "avoid";
+  created_tick: number;
+}
+
 export interface StateUpdate {
   type: "state_update";
   tick: number;
@@ -145,6 +153,8 @@ export interface StateUpdate {
   events: SimEvent[];
   coverage_pct: number;
   agent_info?: AgentInfo;
+  /** Operator-drawn priority zones (biases coordinator's target scoring). */
+  zones?: ZoneData[];
 }
 
 export interface WeatherInfo {

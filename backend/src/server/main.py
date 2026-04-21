@@ -488,14 +488,29 @@ async def simulation_loop() -> None:
             # Yield to event loop before heavy work (prevents startup blocking)
             await asyncio.sleep(0)
 
+            # Drain the pending-command queue atomically so a concurrent
+            # websocket push can't lose commands between iteration + reset.
+            queued = list(pending_commands)
+            pending_commands = []
+
+            # Zone commands (set_priority) are meta-commands that reshape the
+            # coordinator's target scoring — apply them before it builds this
+            # tick's commands so the bias takes effect immediately. Everything
+            # else falls through to the drone-level command path.
+            drone_commands: list[Command] = []
+            for cmd in queued:
+                if cmd.type == "set_priority":
+                    coordinator.apply_zone_command(cmd, world)
+                else:
+                    drone_commands.append(cmd)
+
             # Get AI agent commands
             agent_commands = coordinator.update(world, sim_config)
 
             # Human commands apply LAST so they win within the tick —
             # _apply_command iterates in order and later writes overwrite
             # earlier ones. Documented contract: human overrides agent.
-            commands = agent_commands + list(pending_commands)
-            pending_commands = []
+            commands = agent_commands + drone_commands
 
             # Tick with chunked terrain
             world = tick_chunked(world, dt * sim_speed, chunked_world, commands, rng=rng, config=sim_config)
@@ -607,6 +622,7 @@ async def simulation_loop() -> None:
                 "agent_info": agent_info,
                 "world_size": world_size,
                 "chunk_size": chunked_config.chunk_size,
+                "zones": coordinator.serialize_zones(),
             }
 
             # One-shot notifications for each clue discovered this tick —

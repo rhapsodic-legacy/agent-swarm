@@ -85,6 +85,15 @@ export class SwarmClient {
     });
   }
 
+  sendZoneCommand(payload: {
+    action: "create" | "update" | "delete" | "clear";
+    zone_id?: string;
+    polygon?: [number, number][];
+    priority?: "high" | "low" | "avoid";
+  }): void {
+    this.send({ type: "zone_command", ...payload });
+  }
+
   onChatResponse(callback: ChatCallback): void {
     this.onChat = callback;
   }

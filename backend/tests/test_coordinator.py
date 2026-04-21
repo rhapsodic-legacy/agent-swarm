@@ -8,9 +8,11 @@ import numpy as np
 
 from src.agents.coordinator import (
     DroneTask,
+    PriorityZone,
     SearchPhase,
     SwarmCoordinator,
 )
+from src.simulation.types import Command
 from src.simulation.engine import create_world, tick
 from src.simulation.types import (
     FOG_EXPLORED,
@@ -191,3 +193,106 @@ def test_coordinator_with_engine_runs_100_ticks():
             DroneStatus.RECHARGING,
             DroneStatus.FAILED,
         )
+
+
+# ---------------------------------------------------------------------------
+# Priority zones
+# ---------------------------------------------------------------------------
+
+
+def _zone_command(
+    action: str,
+    zone_id: str | None = None,
+    polygon: list[list[float]] | None = None,
+    priority: str | None = None,
+) -> Command:
+    data: dict = {"action": action}
+    if zone_id is not None:
+        data["zone_id"] = zone_id
+    if polygon is not None:
+        data["polygon"] = polygon
+    if priority is not None:
+        data["priority"] = priority
+    return Command(
+        type="set_priority", zone_id=zone_id, priority=priority, data=data,
+    )
+
+
+def test_zone_create_update_delete():
+    coord = SwarmCoordinator(_CFG)
+    world = create_world(_CFG)
+
+    poly = [[100.0, 100.0], [200.0, 100.0], [200.0, 200.0], [100.0, 200.0]]
+    coord.apply_zone_command(
+        _zone_command("create", "z1", poly, "high"), world,
+    )
+    assert "z1" in coord.zones
+    assert coord.zones["z1"].priority == "high"
+
+    # Update priority without polygon
+    coord.apply_zone_command(
+        _zone_command("update", "z1", priority="low"), world,
+    )
+    assert coord.zones["z1"].priority == "low"
+
+    # Delete
+    coord.apply_zone_command(_zone_command("delete", "z1"), world)
+    assert "z1" not in coord.zones
+
+
+def test_zone_multiplier_bias():
+    coord = SwarmCoordinator(_CFG)
+    coord.zones["high"] = PriorityZone(
+        "high", ((0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)),
+        "high", 0,
+    )
+    coord.zones["avoid"] = PriorityZone(
+        "avoid", ((500.0, 500.0), (600.0, 500.0), (600.0, 600.0), (500.0, 600.0)),
+        "avoid", 0,
+    )
+    coord.zones["low"] = PriorityZone(
+        "low", ((1000.0, 0.0), (1100.0, 0.0), (1100.0, 100.0), (1000.0, 100.0)),
+        "low", 0,
+    )
+
+    # Inside high zone → 3.0
+    assert coord._zone_multiplier(50.0, 50.0) == 3.0
+    # Inside avoid zone → 0.0 (drones must skip)
+    assert coord._zone_multiplier(550.0, 550.0) == 0.0
+    # Inside low zone → 0.3
+    assert coord._zone_multiplier(1050.0, 50.0) == 0.3
+    # Outside any zone → 1.0
+    assert coord._zone_multiplier(2000.0, 2000.0) == 1.0
+
+
+def test_zone_clear_wipes_all():
+    coord = SwarmCoordinator(_CFG)
+    world = create_world(_CFG)
+    poly = [[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [0.0, 50.0]]
+    coord.apply_zone_command(_zone_command("create", "a", poly, "high"), world)
+    coord.apply_zone_command(_zone_command("create", "b", poly, "avoid"), world)
+    assert len(coord.zones) == 2
+    coord.apply_zone_command(_zone_command("clear"), world)
+    assert coord.zones == {}
+
+
+def test_zone_invalid_priority_ignored():
+    coord = SwarmCoordinator(_CFG)
+    world = create_world(_CFG)
+    poly = [[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [0.0, 50.0]]
+    coord.apply_zone_command(
+        _zone_command("create", "bad", poly, "bogus"), world,
+    )
+    assert "bad" not in coord.zones
+
+
+def test_serialize_zones_round_trip():
+    coord = SwarmCoordinator(_CFG)
+    world = create_world(_CFG)
+    poly = [[10.0, 20.0], [30.0, 20.0], [30.0, 40.0], [10.0, 40.0]]
+    coord.apply_zone_command(_zone_command("create", "z", poly, "high"), world)
+    payload = coord.serialize_zones()
+    assert len(payload) == 1
+    assert payload[0]["zone_id"] == "z"
+    assert payload[0]["priority"] == "high"
+    assert payload[0]["polygon"] == poly

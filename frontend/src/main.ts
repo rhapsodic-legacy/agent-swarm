@@ -8,6 +8,8 @@ import { DroneRenderer } from "@/entities/drones";
 import { FogOfWarRenderer } from "@/fog/fogOfWar";
 import { OverlayRenderer } from "@/entities/overlays";
 import { InteractionManager } from "@/ui/interaction";
+import { ZoneTool } from "@/ui/zoneTool";
+import { ZoneRenderer } from "@/entities/zones";
 import { ChatPanel } from "@/ui/chatPanel";
 import { SettingsPanel } from "@/ui/settingsPanel";
 import type { SimSettings } from "@/ui/settingsPanel";
@@ -373,6 +375,8 @@ client.onWorldOverview((overview: WorldOverview) => {
 // ============================================================================
 
 const interaction = new InteractionManager(scene, camera, glRenderer, client);
+const zoneRenderer = new ZoneRenderer(scene);
+const zoneTool = new ZoneTool(scene, camera, glRenderer, controls, client);
 const minimap = new Minimap();
 const chatPanel = new ChatPanel(client);
 const activityLog = new ActivityLog();
@@ -515,6 +519,8 @@ function animate(now: number = 0): void {
       latestState.evidence,
     );
     interaction.update(latestState.drones);
+    zoneRenderer.update(latestState.zones, dt);
+    zoneTool.setZones(latestState.zones);
     updateHUD(latestState);
     missionScore.update(latestState.agent_info?.metrics);
   }

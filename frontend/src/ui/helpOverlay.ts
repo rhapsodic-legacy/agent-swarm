@@ -49,6 +49,8 @@ export class HelpOverlay {
         <tr><td style="color:#00c8ff;padding:3px 16px 3px 0;font-weight:600">Right-click</td><td>Send selected drone to location</td></tr>
         <tr><td style="color:#00c8ff;padding:3px 16px 3px 0;font-weight:600">X</td><td>Hold position (selected drone)</td></tr>
         <tr><td style="color:#00c8ff;padding:3px 16px 3px 0;font-weight:600">B</td><td>Return to base (selected drone)</td></tr>
+        <tr><td colspan="2" style="padding:8px 0 4px 0;border-top:1px solid rgba(255,255,255,0.1)"></td></tr>
+        <tr><td style="color:#44ff88;padding:3px 16px 3px 0;font-weight:600">Z</td><td>Zone tool — left-drag to paint priority zones</td></tr>
       </table>
       <div style="margin-top:16px;color:#666;font-size:11px;text-align:center">Press <span style="color:#00c8ff">?</span> or <span style="color:#00c8ff">F1</span> to close</div>
     `;

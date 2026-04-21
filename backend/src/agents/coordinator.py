@@ -62,6 +62,62 @@ class DroneTask(Enum):
     RETURNING_TO_BASE = auto()
 
 
+ZONE_PRIORITIES = ("high", "low", "avoid")
+ZONE_MULTIPLIER = {"high": 3.0, "low": 0.3, "avoid": 0.0}
+
+
+@dataclass
+class PriorityZone:
+    """A user-drawn rectangular search-priority zone.
+
+    Stored as an XZ polygon (list of [x, z] pairs) even for rectangles —
+    matches the wire format and leaves room for non-rectangular zones
+    later. Axis-aligned bbox is cached for fast point-in-zone lookups.
+    """
+
+    zone_id: str
+    polygon: tuple[tuple[float, float], ...]
+    priority: str  # one of ZONE_PRIORITIES
+    created_tick: int
+
+    @property
+    def bbox(self) -> tuple[float, float, float, float]:
+        """(x_min, z_min, x_max, z_max)."""
+        xs = [p[0] for p in self.polygon]
+        zs = [p[1] for p in self.polygon]
+        return (min(xs), min(zs), max(xs), max(zs))
+
+    def contains(self, x: float, z: float) -> bool:
+        x_min, z_min, x_max, z_max = self.bbox
+        if not (x_min <= x <= x_max and z_min <= z <= z_max):
+            return False
+        if len(self.polygon) <= 4 and _is_axis_aligned_rect(self.polygon):
+            return True
+        return _point_in_polygon(x, z, self.polygon)
+
+
+def _is_axis_aligned_rect(polygon: tuple[tuple[float, float], ...]) -> bool:
+    if len(polygon) != 4:
+        return False
+    xs = {round(p[0], 4) for p in polygon}
+    zs = {round(p[1], 4) for p in polygon}
+    return len(xs) == 2 and len(zs) == 2
+
+
+def _point_in_polygon(x: float, z: float, polygon: tuple[tuple[float, float], ...]) -> bool:
+    """Ray-cast point-in-polygon test (XZ plane)."""
+    n = len(polygon)
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, zi = polygon[i]
+        xj, zj = polygon[j]
+        if ((zi > z) != (zj > z)) and (x < (xj - xi) * (z - zi) / (zj - zi + 1e-12) + xi):
+            inside = not inside
+        j = i
+    return inside
+
+
 @dataclass
 class DroneAgent:
     """Mutable per-drone agent state (lives outside the immutable sim state)."""
@@ -143,6 +199,8 @@ class SwarmCoordinator:
         self._poc_cache_tick: int = -1
         self._poc_hottest: list[tuple[int, int, float]] = []
         self._poc_claimed: set[tuple[int, int]] = set()
+        # User-drawn priority zones (operator "paint" commands)
+        self.zones: dict[str, PriorityZone] = {}
 
     def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
         """Append an entry to the activity log ring buffer."""
@@ -160,6 +218,128 @@ class SwarmCoordinator:
     def get_recent_log(self, since_tick: int = 0) -> list[dict]:
         """Return log entries since the given tick (for incremental frontend updates)."""
         return [e for e in self._activity_log if e["tick"] >= since_tick]
+
+    # ---------------------------------------------------------------- zones
+    def apply_zone_command(self, command: Command, world: WorldState | None = None) -> None:
+        """Process a zone_command (create / update / delete / clear).
+
+        Payload lives in command.data (set_priority commands carry the
+        original websocket message). The coordinator owns zone state so
+        target selection can bias drones toward high-priority regions and
+        away from avoid regions.
+        """
+        data = command.data or {}
+        action = str(data.get("action", "create")).lower()
+        zone_id = command.zone_id or data.get("zone_id")
+        tick = world.tick if world is not None else 0
+        elapsed = world.elapsed if world is not None else 0.0
+
+        if action == "clear":
+            self.zones.clear()
+            self._log(tick, elapsed, None, "All priority zones cleared.", "decision")
+            return
+
+        if not zone_id:
+            return
+
+        if action == "delete":
+            existing = self.zones.pop(zone_id, None)
+            if existing is not None:
+                self._log(
+                    tick, elapsed, None,
+                    f"Zone '{zone_id}' ({existing.priority}) deleted.",
+                    "decision",
+                )
+            return
+
+        priority = (command.priority or data.get("priority") or "").lower()
+        if priority not in ZONE_PRIORITIES:
+            self._log(
+                tick, elapsed, None,
+                f"Zone '{zone_id}' ignored — invalid priority '{priority}'.",
+                "alert",
+            )
+            return
+
+        raw_polygon = data.get("polygon")
+        if not isinstance(raw_polygon, list) or len(raw_polygon) < 3:
+            # Update existing zone's priority only
+            existing = self.zones.get(zone_id)
+            if existing is not None:
+                self.zones[zone_id] = PriorityZone(
+                    zone_id=zone_id,
+                    polygon=existing.polygon,
+                    priority=priority,
+                    created_tick=existing.created_tick,
+                )
+                self._log(
+                    tick, elapsed, None,
+                    f"Zone '{zone_id}' priority → {priority}.",
+                    "decision",
+                )
+            return
+
+        polygon: list[tuple[float, float]] = []
+        for pt in raw_polygon:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                polygon.append((float(pt[0]), float(pt[1])))
+        if len(polygon) < 3:
+            return
+
+        zone = PriorityZone(
+            zone_id=zone_id,
+            polygon=tuple(polygon),
+            priority=priority,
+            created_tick=tick,
+        )
+        existed = zone_id in self.zones
+        self.zones[zone_id] = zone
+        # Bust PoC cache so zone bias takes effect immediately
+        self._poc_cache_tick = -1
+        verb = "Updated" if existed else "Created"
+        x_min, z_min, x_max, z_max = zone.bbox
+        w = x_max - x_min
+        h = z_max - z_min
+        self._log(
+            tick, elapsed, None,
+            f"{verb} {priority}-priority zone '{zone_id}' ({w:.0f}×{h:.0f}m).",
+            "decision",
+        )
+
+    def _zone_multiplier(self, x: float, z: float) -> float:
+        """PoC-score multiplier from user zones at (x, z).
+
+        * avoid → 0 (caller should skip the target entirely)
+        * low → 0.3
+        * high → 3.0
+        * default → 1.0
+        Avoid zones take precedence over high-priority overlaps.
+        """
+        if not self.zones:
+            return 1.0
+        best = 1.0
+        for zone in self.zones.values():
+            if not zone.contains(x, z):
+                continue
+            mult = ZONE_MULTIPLIER[zone.priority]
+            if mult == 0.0:
+                return 0.0
+            if zone.priority == "high":
+                best = max(best, mult)
+            elif zone.priority == "low" and best == 1.0:
+                best = mult
+        return best
+
+    def serialize_zones(self) -> list[dict]:
+        return [
+            {
+                "zone_id": z.zone_id,
+                "polygon": [list(pt) for pt in z.polygon],
+                "priority": z.priority,
+                "created_tick": z.created_tick,
+            }
+            for z in self.zones.values()
+        ]
 
     def update(self, world: WorldState, config: SimConfig) -> list[Command]:
         """Produce commands for all active drones based on current world state."""
@@ -605,6 +785,12 @@ class SwarmCoordinator:
                 continue
             tx, tz = sm.cell_to_world(col, row)
 
+            # Operator zone bias: avoid zones skip, low zones de-weight,
+            # high zones get a score boost.
+            zone_mult = self._zone_multiplier(tx, tz)
+            if zone_mult <= 0.0:
+                continue
+
             # Range check: can the drone reach this target AND return to base?
             dist_to_target = math.sqrt(
                 (drone.position.x - tx) ** 2 + (drone.position.z - tz) ** 2
@@ -624,8 +810,8 @@ class SwarmCoordinator:
 
             dist = max(dist_to_target, 1.0)
 
-            # Score: prefer high PoC per unit distance
-            score = poc_val / dist
+            # Score: PoC per unit distance, scaled by operator zone priority
+            score = (poc_val * zone_mult) / dist
             if score > best_score:
                 best_score = score
                 best_cell = (col, row)
@@ -639,6 +825,9 @@ class SwarmCoordinator:
                 if (col, row) in self._poc_claimed or poc_val <= 0.0:
                     continue
                 tx, tz = sm.cell_to_world(col, row)
+                zone_mult = self._zone_multiplier(tx, tz)
+                if zone_mult <= 0.0:
+                    continue
                 dist_to_target = math.sqrt(
                     (drone.position.x - tx) ** 2 + (drone.position.z - tz) ** 2
                 )
@@ -648,7 +837,7 @@ class SwarmCoordinator:
                 if dist_to_target + dist_target_to_base > max_range_meters:
                     continue
                 dist = max(dist_to_target, 1.0)
-                score = poc_val / dist
+                score = (poc_val * zone_mult) / dist
                 if score > best_score:
                     best_score = score
                     best_cell = (col, row)
