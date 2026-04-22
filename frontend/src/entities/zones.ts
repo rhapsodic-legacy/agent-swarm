@@ -74,14 +74,12 @@ export class ZoneRenderer {
     if (polygon.length < 3) return;
 
     // Fill: ShapeGeometry over the polygon projected to XZ.
+    // ShapeGeometry lives in XY; rotateX(+π/2) maps shape-Y → world-Z (not -Z).
     const shape = new THREE.Shape(
       polygon.map(([x, z]) => new THREE.Vector2(x, z)),
     );
     const fillGeo = new THREE.ShapeGeometry(shape);
-    // Rotate so the shape lies on the XZ plane (ShapeGeometry is in XY).
-    fillGeo.rotateX(-Math.PI / 2);
-    // Move slightly above ground to avoid z-fighting with terrain.
-    fillGeo.translate(0, 0.8, 0);
+    fillGeo.rotateX(Math.PI / 2);
 
     const fillMat = new THREE.MeshBasicMaterial({
       color,
@@ -89,9 +87,10 @@ export class ZoneRenderer {
       opacity: FILL_OPACITY,
       side: THREE.DoubleSide,
       depthWrite: false,
+      depthTest: false,
     });
     const fill = new THREE.Mesh(fillGeo, fillMat);
-    fill.renderOrder = 5;
+    fill.renderOrder = 1000;
 
     // Border: closed line loop at a fractionally higher Y.
     const borderPositions = new Float32Array((polygon.length + 1) * 3);
@@ -112,9 +111,10 @@ export class ZoneRenderer {
       color,
       transparent: true,
       opacity: BORDER_OPACITY,
+      depthTest: false,
     });
     const border = new THREE.Line(borderGeo, borderMat);
-    border.renderOrder = 6;
+    border.renderOrder = 1001;
 
     this.scene.add(fill);
     this.scene.add(border);

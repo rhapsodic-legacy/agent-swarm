@@ -236,7 +236,10 @@ class SwarmCoordinator:
 
         if action == "clear":
             self.zones.clear()
+            self._poc_cache_tick = -1
             self._log(tick, elapsed, None, "All priority zones cleared.", "decision")
+            if world is not None:
+                self._invalidate_targets_for_zone_change(world)
             return
 
         if not zone_id:
@@ -245,11 +248,14 @@ class SwarmCoordinator:
         if action == "delete":
             existing = self.zones.pop(zone_id, None)
             if existing is not None:
+                self._poc_cache_tick = -1
                 self._log(
                     tick, elapsed, None,
                     f"Zone '{zone_id}' ({existing.priority}) deleted.",
                     "decision",
                 )
+                if world is not None:
+                    self._invalidate_targets_for_zone_change(world)
             return
 
         priority = (command.priority or data.get("priority") or "").lower()
@@ -272,11 +278,14 @@ class SwarmCoordinator:
                     priority=priority,
                     created_tick=existing.created_tick,
                 )
+                self._poc_cache_tick = -1
                 self._log(
                     tick, elapsed, None,
                     f"Zone '{zone_id}' priority → {priority}.",
                     "decision",
                 )
+                if world is not None:
+                    self._invalidate_targets_for_zone_change(world)
             return
 
         polygon: list[tuple[float, float]] = []
@@ -300,11 +309,47 @@ class SwarmCoordinator:
         x_min, z_min, x_max, z_max = zone.bbox
         w = x_max - x_min
         h = z_max - z_min
+        overlap_note = ""
+        if world is not None and world.search_map is not None:
+            try:
+                sm = world.search_map
+                hot_in_zone = 0
+                for col, row, poc_val in sm.diverse_hotspots(50, min_separation_meters=50.0):
+                    if poc_val <= 0.0:
+                        continue
+                    hx, hz = sm.cell_to_world(col, row)
+                    if zone.contains(hx, hz):
+                        hot_in_zone += 1
+                overlap_note = f" — {hot_in_zone} PoC hotspot(s) inside"
+            except Exception:
+                pass
         self._log(
             tick, elapsed, None,
-            f"{verb} {priority}-priority zone '{zone_id}' ({w:.0f}×{h:.0f}m).",
+            f"{verb} {priority}-priority zone '{zone_id}' ({w:.0f}×{h:.0f}m){overlap_note}.",
             "decision",
         )
+        # Invalidate in-flight targets so drones react to the new zone on the
+        # next tick instead of finishing their current sweep first.
+        if world is not None:
+            self._invalidate_targets_for_zone_change(world)
+
+    def _invalidate_targets_for_zone_change(self, world: WorldState) -> None:
+        """Force active (non-RTB) drones to re-pick a target next tick.
+
+        Zone bias only applies at target-selection time. Without this, a drone
+        mid-sweep won't re-evaluate for tens of seconds and zones appear dead.
+        """
+        for drone in world.drones:
+            if drone.status != DroneStatus.ACTIVE:
+                continue
+            agent = self.agents.get(drone.id)
+            if agent is None:
+                continue
+            if agent.task == DroneTask.RETURNING_TO_BASE:
+                continue
+            agent.current_target = None
+            agent.local_sweep_waypoints = None
+            agent.ticks_at_target = 0
 
     def _zone_multiplier(self, x: float, z: float) -> float:
         """PoC-score multiplier from user zones at (x, z).

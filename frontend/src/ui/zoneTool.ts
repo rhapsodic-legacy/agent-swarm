@@ -94,10 +94,11 @@ export class ZoneTool {
       opacity: 0.25,
       side: THREE.DoubleSide,
       depthWrite: false,
+      depthTest: false,
     });
     this.previewMesh = new THREE.Mesh(fillGeo, this.previewMaterial);
     this.previewMesh.position.y = 1.0;
-    this.previewMesh.renderOrder = 15;
+    this.previewMesh.renderOrder = 1002;
     this.previewMesh.visible = false;
     this.scene.add(this.previewMesh);
 
@@ -111,9 +112,10 @@ export class ZoneTool {
       color: PRIORITY_COLORS[this.priority],
       transparent: true,
       opacity: 0.9,
+      depthTest: false,
     });
     this.previewBorder = new THREE.Line(borderGeo, this.previewBorderMaterial);
-    this.previewBorder.renderOrder = 16;
+    this.previewBorder.renderOrder = 1003;
     this.previewBorder.visible = false;
     this.scene.add(this.previewBorder);
 
