@@ -24,6 +24,11 @@ from src.agents.mission_planner import MissionPlanner
 from src.agents.pathfinding import (
     potential_field_direction,
 )
+from src.agents.priority_market import (
+    PriorityAsset,
+    PriorityWeights,
+    clear_market,
+)
 from src.agents.search_patterns import (
     frontier_search,
     lawnmower_waypoints,
@@ -201,6 +206,13 @@ class SwarmCoordinator:
         self._poc_claimed: set[tuple[int, int]] = set()
         # User-drawn priority zones (operator "paint" commands)
         self.zones: dict[str, PriorityZone] = {}
+        # Priority market — unified auction-based task allocation. Every
+        # tick, all priority sources (PoC hotspots, operator zones, future
+        # intel pins / survivor finds / LLM goals) are merged into one
+        # PriorityAsset list; drones bid; winners get assignments.
+        self._weights = PriorityWeights()
+        self._market_tick: int = -1
+        self._market_assignments: dict[int, PriorityAsset] = {}
 
     def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
         """Append an entry to the activity log ring buffer."""
@@ -239,7 +251,7 @@ class SwarmCoordinator:
             self._poc_cache_tick = -1
             self._log(tick, elapsed, None, "All priority zones cleared.", "decision")
             if world is not None:
-                self._invalidate_targets_for_zone_change(world)
+                self._invalidate_targets_in_avoid_zones(world)
             return
 
         if not zone_id:
@@ -255,7 +267,7 @@ class SwarmCoordinator:
                     "decision",
                 )
                 if world is not None:
-                    self._invalidate_targets_for_zone_change(world)
+                    self._invalidate_targets_in_avoid_zones(world)
             return
 
         priority = (command.priority or data.get("priority") or "").lower()
@@ -285,7 +297,7 @@ class SwarmCoordinator:
                     "decision",
                 )
                 if world is not None:
-                    self._invalidate_targets_for_zone_change(world)
+                    self._invalidate_targets_in_avoid_zones(world)
             return
 
         polygon: list[tuple[float, float]] = []
@@ -331,25 +343,42 @@ class SwarmCoordinator:
         # Invalidate in-flight targets so drones react to the new zone on the
         # next tick instead of finishing their current sweep first.
         if world is not None:
-            self._invalidate_targets_for_zone_change(world)
+            self._invalidate_targets_in_avoid_zones(world)
 
-    def _invalidate_targets_for_zone_change(self, world: WorldState) -> None:
-        """Force active (non-RTB) drones to re-pick a target next tick.
+    def _invalidate_targets_in_avoid_zones(self, world: WorldState) -> None:
+        """Force drones whose current target sits inside an avoid zone to re-pick.
 
-        Zone bias only applies at target-selection time. Without this, a drone
-        mid-sweep won't re-evaluate for tens of seconds and zones appear dead.
+        Only drones targeting (or mid-sweep near) a now-forbidden point need
+        to drop their task. Drones elsewhere keep their work — the priority
+        market rebids every tick and naturally migrates them via switching
+        cost, so blanket invalidation would displace productive drones
+        (e.g. a drone already investigating a survivor find).
         """
+        avoid_zones = [z for z in self.zones.values() if z.priority == "avoid"]
+        if not avoid_zones:
+            return
+
+        def inside_avoid(x: float, z: float) -> bool:
+            return any(zone.contains(x, z) for zone in avoid_zones)
+
         for drone in world.drones:
             if drone.status != DroneStatus.ACTIVE:
                 continue
             agent = self.agents.get(drone.id)
-            if agent is None:
+            if agent is None or agent.task == DroneTask.RETURNING_TO_BASE:
                 continue
-            if agent.task == DroneTask.RETURNING_TO_BASE:
+            target = agent.current_target
+            if target is not None and inside_avoid(target.x, target.z):
+                agent.current_target = None
+                agent.local_sweep_waypoints = None
+                agent.ticks_at_target = 0
                 continue
-            agent.current_target = None
-            agent.local_sweep_waypoints = None
-            agent.ticks_at_target = 0
+            # Also scrub queued sweep waypoints that land in the avoid zone
+            if agent.local_sweep_waypoints:
+                agent.local_sweep_waypoints = [
+                    wp for wp in agent.local_sweep_waypoints
+                    if not inside_avoid(wp.x, wp.z)
+                ] or None
 
     def _zone_multiplier(self, x: float, z: float) -> float:
         """PoC-score multiplier from user zones at (x, z).
@@ -765,14 +794,41 @@ class SwarmCoordinator:
         return None
 
     def _poc_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
-        """Select a target from DIVERSE hotspots (NMS-sampled).
+        """Return this drone's market-assigned priority asset as a world-space Vec3.
 
-        Instead of picking the top-N hottest cells (which all cluster around
-        the dominant peak), we use non-maximum suppression to get one hotspot
-        per cluster region. Then each drone picks the closest free hotspot.
+        Delegates selection to the unified priority market (see
+        `_run_priority_market`), which runs once per tick and resolves all
+        assignments globally. Per-drone logic here is just the lookup.
+        """
+        if world.search_map is None:
+            return None
 
-        This produces real search-theory behavior: drones fan out across
-        ALL high-probability regions simultaneously, not just the biggest one.
+        if self._market_tick != world.tick:
+            self._run_priority_market(world)
+            self._market_tick = world.tick
+
+        asset = self._market_assignments.get(drone.id)
+        if asset is None:
+            return None
+
+        # Clamp to world bounds + look up terrain elevation at target.
+        tw = world.terrain.width
+        th = world.terrain.height
+        tx = max(50.0, min(float(tw - 50), asset.x))
+        tz = max(50.0, min(float(th - 50), asset.z))
+        trow = int(min(tz, th - 1))
+        tcol = int(min(tx, tw - 1))
+        elev = float(world.terrain.heightmap[trow][tcol])
+        agent.task = DroneTask.FRONTIER_EXPLORING  # closest existing task to "PoC-seeking"
+        return Vec3(tx, elev, tz)
+
+    def _run_priority_market(self, world: WorldState) -> None:
+        """Compute global priority-asset assignments for this tick.
+
+        Gathers PoC hotspots (zone-tagged by source), applies the avoid-zone
+        filter, then calls `clear_market` to produce one assignment per
+        eligible drone. Eligible = active, not RTB, no current target, no
+        pending local sweep — i.e. actually asking for work.
         """
         import math
 
@@ -780,16 +836,33 @@ class SwarmCoordinator:
 
         sm: SearchMap = world.search_map  # type: ignore[assignment]
 
-        # Hotspot separation: for N drones in W×W world, ideal spacing is
-        # W/sqrt(N). 20 drones in 10km → ~2300m. Separation should be smaller
-        # so we have more than N hotspots (allowing drones choice), but big
-        # enough that adjacent candidates are from different clusters.
-        world_size = max(world.terrain.width, world.terrain.height)
-        active_count = max(sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE), 1)
-        hotspot_separation = 0.4 * (world_size / math.sqrt(active_count))
+        # Bidder pool
+        available: list[Drone] = []
+        drone_tasks: dict[int, str] = {}
+        for d in world.drones:
+            if d.status != DroneStatus.ACTIVE:
+                continue
+            agent = self.agents.get(d.id)
+            if agent is None or agent.task == DroneTask.RETURNING_TO_BASE:
+                continue
+            if agent.current_target is not None:
+                continue
+            if agent.local_sweep_waypoints:
+                continue
+            available.append(d)
+            drone_tasks[d.id] = agent.task.name
 
-        # Cache diverse hotspots per tick. n = 2*active so each drone has
-        # options even after claims.
+        if not available:
+            self._market_assignments = {}
+            return
+
+        # Diverse-hotspot cache (shared with old _poc_target, refreshed on
+        # evidence events / zone changes via `_poc_cache_tick = -1`).
+        world_size = max(world.terrain.width, world.terrain.height)
+        active_count = max(
+            sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE), 1,
+        )
+        hotspot_separation = 0.4 * (world_size / math.sqrt(active_count))
         if self._poc_cache_tick != world.tick:
             n_spots = active_count * 2 + 5
             self._poc_hottest = sm.diverse_hotspots(
@@ -798,110 +871,47 @@ class SwarmCoordinator:
             self._poc_claimed = set()
             self._poc_cache_tick = world.tick
 
-        # Collect other drones' active targets — avoid picking their target.
-        other_targets: list[tuple[float, float]] = []
-        for d in world.drones:
-            if d.id == drone.id or d.status != DroneStatus.ACTIVE:
-                continue
-            other_agent = self.agents.get(d.id)
-            if other_agent is not None and other_agent.current_target is not None:
-                other_targets.append(
-                    (other_agent.current_target.x, other_agent.current_target.z)
-                )
-
-        # Safety: compute max total flight distance from current battery.
-        # Measured actual drain: 0.58%/s = 4.83× base — use 5× for margin.
-        speed_est = drone.max_speed * 0.85
-        drain_est = self.config.drone_battery_drain_rate * 5.0  # %/s
-        available_battery = max(drone.battery - 10.0, 0.0)
-        max_flight_time = available_battery / max(drain_est, 0.01)
-        max_range_meters = speed_est * max_flight_time
-        # Round-trip: target must be at most half the range from CURRENT position
-        # PLUS at most that much from the base.
-        base_x, base_z = world.base_position.x, world.base_position.z
-
-        # Pick the closest non-claimed, non-other-drone hotspot.
-        best_cell = None
-        best_score = -math.inf
+        # PoC hotspots → PriorityAssets. Zone overlap selects the source
+        # tag; source_value_scale in PriorityWeights applies the multiplier.
+        assets: list[PriorityAsset] = []
         for col, row, poc_val in self._poc_hottest:
             if poc_val <= 0.0:
                 continue
-            if (col, row) in self._poc_claimed:
-                continue
-            tx, tz = sm.cell_to_world(col, row)
-
-            # Operator zone bias: avoid zones skip, low zones de-weight,
-            # high zones get a score boost.
-            zone_mult = self._zone_multiplier(tx, tz)
-            if zone_mult <= 0.0:
-                continue
-
-            # Range check: can the drone reach this target AND return to base?
-            dist_to_target = math.sqrt(
-                (drone.position.x - tx) ** 2 + (drone.position.z - tz) ** 2
+            ax, az = sm.cell_to_world(col, row)
+            zone_mult = self._zone_multiplier(ax, az)
+            if zone_mult == 0.0:
+                continue  # inside avoid zone → skip producing the asset at all
+            if zone_mult > 1.0:
+                source = "operator_high_zone"
+            elif zone_mult < 1.0:
+                source = "operator_low_zone"
+            else:
+                source = "poc_field"
+            assets.append(
+                PriorityAsset(
+                    asset_id=f"poc_{col}_{row}",
+                    x=float(ax),
+                    z=float(az),
+                    radius=80.0,
+                    value=float(poc_val),
+                    source=source,
+                )
             )
-            dist_target_to_base = math.sqrt((tx - base_x) ** 2 + (tz - base_z) ** 2)
-            if dist_to_target + dist_target_to_base > max_range_meters:
-                continue  # can't safely reach + return
 
-            # Skip hotspots any other drone is already targeting
-            claimed_by_other = False
-            for (ox, oz) in other_targets:
-                if math.sqrt((tx - ox) ** 2 + (tz - oz) ** 2) < hotspot_separation * 0.5:
-                    claimed_by_other = True
-                    break
-            if claimed_by_other:
-                continue
+        avoid_zones = [z for z in self.zones.values() if z.priority == "avoid"]
 
-            dist = max(dist_to_target, 1.0)
+        def is_in_avoid(x: float, z: float) -> bool:
+            return any(zone.contains(x, z) for zone in avoid_zones)
 
-            # Score: PoC per unit distance, scaled by operator zone priority
-            score = (poc_val * zone_mult) / dist
-            if score > best_score:
-                best_score = score
-                best_cell = (col, row)
-
-        # Fallback: if all diverse hotspots are unreachable OR taken by others,
-        # pick any unclaimed one — but STILL enforce range (never commit to
-        # a target the drone can't survive). If no reachable target exists,
-        # the drone will return nothing and the caller will RTB.
-        if best_cell is None:
-            for col, row, poc_val in self._poc_hottest:
-                if (col, row) in self._poc_claimed or poc_val <= 0.0:
-                    continue
-                tx, tz = sm.cell_to_world(col, row)
-                zone_mult = self._zone_multiplier(tx, tz)
-                if zone_mult <= 0.0:
-                    continue
-                dist_to_target = math.sqrt(
-                    (drone.position.x - tx) ** 2 + (drone.position.z - tz) ** 2
-                )
-                dist_target_to_base = math.sqrt(
-                    (tx - base_x) ** 2 + (tz - base_z) ** 2
-                )
-                if dist_to_target + dist_target_to_base > max_range_meters:
-                    continue
-                dist = max(dist_to_target, 1.0)
-                score = (poc_val * zone_mult) / dist
-                if score > best_score:
-                    best_score = score
-                    best_cell = (col, row)
-
-        if best_cell is None:
-            return None
-
-        self._poc_claimed.add(best_cell)
-        tx, tz = sm.cell_to_world(*best_cell)
-        # Clamp to world bounds and look up terrain height
-        tw = world.terrain.width
-        th = world.terrain.height
-        tx = max(50.0, min(float(tw - 50), tx))
-        tz = max(50.0, min(float(th - 50), tz))
-        row = int(min(tz, th - 1))
-        col = int(min(tx, tw - 1))
-        elev = float(world.terrain.heightmap[row][col])
-        agent.task = DroneTask.FRONTIER_EXPLORING  # closest existing task to "PoC-seeking"
-        return Vec3(tx, elev, tz)
+        self._market_assignments = clear_market(
+            drones=available,
+            drone_tasks=drone_tasks,
+            assets=assets,
+            base_pos=world.base_position,
+            config=self.config,
+            weights=self._weights,
+            is_in_avoid_zone=is_in_avoid if avoid_zones else None,
+        )
 
     def _systematic_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:
         """Generate waypoints for systematic lawnmower search within zone."""
