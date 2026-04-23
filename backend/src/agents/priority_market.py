@@ -77,8 +77,18 @@ class PriorityWeights:
     distance_penalty: float = 1.0          # coef on dist_to_asset in dist_factor
     base_return_penalty: float = 0.5       # coef on dist_to_base in dist_factor
     battery_safety_margin_pct: float = 10.0  # reserve battery % below which bids go 0
-    saturation_value_per_slot: float = 2.0   # capacity = ceil(value / this)
-    max_assignees_per_asset: int = 5         # hard cap on drones per asset
+    # Drain multiplier to account for real per-tick drain vs nominal cruise rate
+    # (movement + altitude + sensor combine to ~3.6× nominal). 4× keeps a small
+    # safety buffer without over-restricting reach.
+    drain_safety_multiplier: float = 4.0
+    # Capacity per asset = ceil(effective_value / saturation). Using effective
+    # value (post source-scale) lets operator-boosted zones absorb multiple
+    # drones — real-world SAR clusters multiple drones on a hot area at
+    # different altitudes / search patterns. Scaled to typical normalized PoC
+    # peak values (~5e-4); a poc_field cell thus stays at capacity 1 while an
+    # operator_high_zone cell (5× boost) absorbs ~5 drones.
+    saturation_value_per_slot: float = 5e-4
+    max_assignees_per_asset: int = 6         # hard cap per asset
 
 
 def bid(
@@ -105,10 +115,11 @@ def bid(
     bdz = asset.z - base_pos.z
     dist_to_base = math.sqrt(bdx * bdx + bdz * bdz)
 
-    # Battery feasibility: measured drain is ~5x base under load, matching
-    # the safety heuristic already in coordinator._poc_target.
+    # Battery feasibility: actual per-tick drain is ~3.6× nominal
+    # (speed ×2.0 at cruise × altitude ×1.5 × sensor ×1.2). We use 4× as a
+    # small safety buffer without stranding drones or over-restricting reach.
     speed_est = drone.max_speed * 0.85
-    drain_est = config.drone_battery_drain_rate * 5.0
+    drain_est = config.drone_battery_drain_rate * weights.drain_safety_multiplier
     available = max(drone.battery - weights.battery_safety_margin_pct, 0.0)
     max_range = speed_est * (available / max(drain_est, 0.01))
     round_trip = dist_to_asset + dist_to_base
@@ -153,16 +164,18 @@ def clear_market(
     if not bidable:
         return {}
 
-    capacity: dict[str, int] = {
-        a.asset_id: max(
+    # Capacity uses effective value (value × source_scale), so an operator
+    # high zone with source_scale 5× soaks up ~5 drones per cell instead of 1.
+    capacity: dict[str, int] = {}
+    for a in bidable:
+        effective = a.value * weights.source_value_scale.get(a.source, 1.0)
+        capacity[a.asset_id] = max(
             1,
             min(
                 weights.max_assignees_per_asset,
-                math.ceil(a.value / max(weights.saturation_value_per_slot, 1e-6)),
+                math.ceil(effective / max(weights.saturation_value_per_slot, 1e-6)),
             ),
         )
-        for a in bidable
-    }
 
     bid_tuples: list[tuple[float, int, PriorityAsset]] = []
     for drone in drones:

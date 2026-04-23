@@ -29,7 +29,7 @@ def _asset(
     asset_id: str = "a1",
     x: float = 500.0,
     z: float = 0.0,
-    value: float = 1.0,
+    value: float = 5e-4,  # realistic normalized-PoC peak
     source: str = "poc_field",
 ) -> PriorityAsset:
     return PriorityAsset(
@@ -104,6 +104,7 @@ def test_bid_base_return_penalty_punishes_far_base() -> None:
 def test_clear_market_assigns_each_drone_at_most_once() -> None:
     d0 = _drone(0, x=100.0, z=0.0)
     d1 = _drone(1, x=120.0, z=0.0)
+    # Default asset value 5e-4 → capacity 1 per asset at default saturation.
     a0 = _asset(asset_id="a0", x=500.0, z=0.0)
     a1 = _asset(asset_id="a1", x=-500.0, z=0.0)
     assignments = clear_market(
@@ -114,22 +115,18 @@ def test_clear_market_assigns_each_drone_at_most_once() -> None:
         config=_cfg(),
         weights=PriorityWeights(),
     )
-    # Each drone gets one asset.
     assert set(assignments.keys()) == {0, 1}
-    # Assignments should be distinct (the two drones aren't saturating the
-    # same asset because capacity defaults < 2 for value=1.0).
-    # With value=1.0 and saturation_value_per_slot=2.0 → capacity = max(1, 1) = 1.
+    # Each poc_field asset has capacity 1 at default saturation → drones
+    # must split.
     assert assignments[0].asset_id != assignments[1].asset_id
 
 
 def test_clear_market_respects_per_asset_capacity() -> None:
-    """An asset with capacity 1 should only assign to one drone."""
+    """A poc_field asset caps at capacity 1 — only one drone can take it."""
     d0 = _drone(0, x=100.0, z=0.0)
     d1 = _drone(1, x=110.0, z=0.0)
-    # High-value asset so both drones would prefer it.
-    a_big = _asset(asset_id="big", x=500.0, z=0.0, value=1.0)
-    # Distant fallback.
-    a_far = _asset(asset_id="far", x=-3000.0, z=0.0, value=1.0)
+    a_big = _asset(asset_id="big", x=500.0, z=0.0)        # poc_field → cap 1
+    a_far = _asset(asset_id="far", x=-3000.0, z=0.0)      # poc_field → cap 1
     assignments = clear_market(
         drones=[d0, d1],
         drone_tasks={0: "IDLE", 1: "IDLE"},
@@ -138,9 +135,32 @@ def test_clear_market_respects_per_asset_capacity() -> None:
         config=_cfg(),
         weights=PriorityWeights(),
     )
-    # Only one drone can go to "big"; the other takes "far" or nothing.
     big_count = sum(1 for a in assignments.values() if a.asset_id == "big")
     assert big_count == 1
+
+
+def test_clear_market_operator_zone_absorbs_multiple_drones() -> None:
+    """An operator_high_zone asset (5× source scale) should take ~5 drones."""
+    # Many drones clustered near the zone asset
+    drones = [_drone(i, x=100.0 + i * 5, z=0.0) for i in range(8)]
+    tasks = {d.id: "IDLE" for d in drones}
+    zone_asset = _asset(
+        asset_id="zone_hot", x=400.0, z=0.0, value=5e-4, source="operator_high_zone",
+    )
+    # Include a distant fallback so drones that don't win the zone have
+    # somewhere to go.
+    fallback = _asset(asset_id="fallback", x=-2000.0, z=0.0, value=5e-4)
+    assignments = clear_market(
+        drones=drones,
+        drone_tasks=tasks,
+        assets=[zone_asset, fallback],
+        base_pos=Vec3(0, 0, 0),
+        config=_cfg(),
+        weights=PriorityWeights(),
+    )
+    in_zone = sum(1 for a in assignments.values() if a.asset_id == "zone_hot")
+    # Effective value = 5e-4 × 5.0 = 2.5e-3; at saturation 5e-4 → capacity 5.
+    assert in_zone == 5
 
 
 def test_clear_market_excludes_rtb_drones() -> None:
