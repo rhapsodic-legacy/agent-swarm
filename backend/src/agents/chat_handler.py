@@ -24,35 +24,73 @@ performing search-and-rescue (SAR) over procedurally generated terrain.
 
 You receive natural language messages from the human operator. Your job is to:
 1. Interpret the operator's intent (query, command, or both).
-2. Generate a helpful natural language reply.
+2. Generate a helpful natural language reply — cite real numbers from the
+   world state, never invent them.
 3. Translate actionable requests into simulation commands.
 
 ALWAYS respond with a valid JSON object matching this schema:
 {
     "reply": "Human-readable response to the operator",
-    "commands": [
-        {"type": "move_to", "drone_id": 3, "target": [x, z]},
-        {"type": "return_to_base", "drone_id": 5},
-        {"type": "search_area", "drone_id": null, "target": [x, z]},
-        {"type": "set_priority", "zone": "north", "priority": "high"}
-    ],
-    "actions_taken": ["Redirected drone 3 to northern sector"]
+    "commands": [ ... ],
+    "actions_taken": ["Redirected drone 3 to NE sector", ...]
 }
 
-Command types:
-- "move_to": Send a specific drone to coordinates [x, z]. Requires drone_id and target.
-- "return_to_base": Recall a specific drone. Requires drone_id.
-- "search_area": Direct any available drone to search near [x, z]. drone_id is optional.
-- "set_priority": Change zone priority. zone is a name (north, south, east, west, etc.), \
-priority is "high", "medium", or "low".
+Command types (pick the right shape for the operator's intent):
+
+1. Point-and-move (a specific drone):
+   {"type": "move_to", "drone_id": 3, "target": [x, z]}
+   {"type": "return_to_base", "drone_id": 5}
+   {"type": "hold_position", "drone_id": 7}
+
+2. Area hint — the operator says "focus on the urban area" / "prioritize \
+the eastern ridge". Emit a set_intel_pin: a point with radius that the \
+swarm will bias toward. The market decides which drones redirect (it \
+factors in distance, battery, current task). Don't try to assign drones \
+yourself for area hints.
+   {
+     "type": "set_intel_pin",
+     "pin_id": "valley_check",
+     "position": [x, z],
+     "radius": 400,
+     "value": 1.0,
+     "label": "valley south of crash site",
+     "ttl_s": 300
+   }
+   Use ttl_s to auto-expire pins you added for a transient hint (30–600s).
+   value 1.0 = normal urgency; bump to 2.0+ for "critical" / "drop everything".
+
+3. Full polygon zone — only when the operator explicitly describes a \
+region with clear boundaries ("the area between the river and the road").
+   {
+     "type": "zone_command",
+     "zone_id": "east_ridge",
+     "priority": "high",
+     "polygon": [[x1,z1],[x2,z2],[x3,z3],[x4,z4]]
+   }
+   priority is "high" (5× pull), "low" (0.3× pull), or "avoid" (0× — \
+never enter). Prefer intel pins over zones unless geometry matters.
+
+4. Dismiss a hint the operator asked you to retract:
+   {"type": "dismiss_intel_pin", "pin_id": "valley_check"}
+
+Status queries ("give me a status", "why haven't we searched east?"):
+return commands: [] and compose the reply from the world state given
+below. Cite specific numbers (drone count per quadrant, battery, coverage).
+
+Coordinate system:
+- X axis: east (positive) / west (negative)
+- Z axis: north (positive) / south (negative)
+- Base position is given in the world state — use it as a reference
+  anchor when the operator says "north of base" etc.
+- Terrain bounds are given — don't emit coordinates outside them.
 
 Rules:
-- If the operator asks a question with no actionable command, return an empty commands list.
-- Keep replies concise and professional, like a military operations center.
-- When moving drones, prefer active drones with higher battery.
-- Coordinates are in meters. X = east, Z = north. Terrain starts at (0, 0).
-- Reference drone IDs, battery levels, and positions from the provided world state.
-- If the operator's request is ambiguous, ask for clarification and issue no commands."""
+- If the operator asks only a question, return commands: [].
+- Keep replies concise, like a military ops center. Max 2 sentences.
+- If the operator's request is ambiguous, ask for clarification and \
+issue no commands.
+- Never hallucinate drones, survivors, or positions. If you don't see \
+it in the world state, say so."""
 
 
 @dataclass
@@ -226,6 +264,55 @@ def _raw_command_to_command(raw: dict, world: WorldState) -> Command | None:
     if not cmd_type:
         return None
 
+    # --- Intel pins: point-based priority from natural language ---
+    if cmd_type == "set_intel_pin":
+        pos = raw.get("position")
+        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+            return None
+        x = _clamp(float(pos[0]), 0.0, float(world.terrain.width))
+        z = _clamp(float(pos[1]), 0.0, float(world.terrain.height))
+        data = {
+            "action": "create",
+            "pin_id": str(raw.get("pin_id", "llm_pin")),
+            "position": [x, z],
+            "radius": float(raw.get("radius", 400.0)),
+            "value": float(raw.get("value", 1.0)),
+            "label": str(raw.get("label", "")),
+            "ttl_s": raw.get("ttl_s"),
+        }
+        return Command(type="set_intel_pin", zone_id=data["pin_id"], data=data)
+
+    if cmd_type == "dismiss_intel_pin":
+        pin_id = str(raw.get("pin_id", ""))
+        if not pin_id:
+            return None
+        return Command(
+            type="set_intel_pin",
+            zone_id=pin_id,
+            data={"action": "delete", "pin_id": pin_id},
+        )
+
+    # --- Zone polygons: explicit geometry ---
+    if cmd_type == "zone_command":
+        polygon = raw.get("polygon")
+        priority = raw.get("priority")
+        zone_id = raw.get("zone_id") or raw.get("zone")
+        if not polygon or not priority or not zone_id:
+            return None
+        data = {
+            "action": "create",
+            "zone_id": str(zone_id),
+            "priority": str(priority),
+            "polygon": polygon,
+        }
+        return Command(
+            type="set_priority",
+            zone_id=str(zone_id),
+            priority=str(priority),
+            data=data,
+        )
+
+    # --- Direct drone commands (legacy) ---
     drone_id: int | None = raw.get("drone_id")
     if drone_id is not None:
         drone_id = int(drone_id)
@@ -239,15 +326,15 @@ def _raw_command_to_command(raw: dict, world: WorldState) -> Command | None:
         z = _clamp(z, 0.0, float(world.terrain.height))
         target = Vec3(x, 0.0, z)
 
-    zone_id: str | None = raw.get("zone")
-    priority: str | None = raw.get("priority")
+    zone_id_legacy: str | None = raw.get("zone")
+    priority_legacy: str | None = raw.get("priority")
 
     return Command(
         type=cmd_type,
         drone_id=drone_id,
         target=target,
-        zone_id=zone_id,
-        priority=priority,
+        zone_id=zone_id_legacy,
+        priority=priority_legacy,
     )
 
 

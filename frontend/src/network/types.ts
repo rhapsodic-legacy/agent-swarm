@@ -135,6 +135,21 @@ export interface ZoneData {
   created_tick: number;
 }
 
+/** A live, dynamic priority pin placed by the operator via chat or the LLM.
+ *
+ * Distinct from `IntelPin` (mission-briefing static hint) — this is a
+ * point-based PriorityAsset the drone swarm actively biases toward, with
+ * optional TTL for transient hints. */
+export interface LiveIntelPinData {
+  pin_id: string;
+  position: [number, number];
+  radius: number;
+  value: number;
+  label: string;
+  created_tick: number;
+  expires_tick: number | null;
+}
+
 export interface StateUpdate {
   type: "state_update";
   tick: number;
@@ -155,6 +170,8 @@ export interface StateUpdate {
   agent_info?: AgentInfo;
   /** Operator-drawn priority zones (biases coordinator's target scoring). */
   zones?: ZoneData[];
+  /** Live, dynamic intel pins (chat- or LLM-placed point priorities). */
+  intel_pins?: LiveIntelPinData[];
 }
 
 export interface WeatherInfo {

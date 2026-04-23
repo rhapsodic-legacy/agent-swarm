@@ -124,6 +124,12 @@ def parse_command(msg: dict) -> Command | None:
             priority=msg.get("priority"),
             data=msg,
         )
+    elif msg_type == "intel_pin_command":
+        return Command(
+            type="set_intel_pin",
+            zone_id=msg.get("pin_id"),  # reuse zone_id slot for pin_id
+            data=msg,
+        )
     elif msg_type == "sim_control":
         action = msg.get("action")
         global sim_running, sim_speed, sim_reset_requested
@@ -493,14 +499,17 @@ async def simulation_loop() -> None:
             queued = list(pending_commands)
             pending_commands = []
 
-            # Zone commands (set_priority) are meta-commands that reshape the
-            # coordinator's target scoring — apply them before it builds this
-            # tick's commands so the bias takes effect immediately. Everything
-            # else falls through to the drone-level command path.
+            # Zone commands (set_priority) and intel pins (set_intel_pin) are
+            # meta-commands that reshape the coordinator's target scoring —
+            # apply them before it builds this tick's commands so the bias
+            # takes effect immediately. Everything else falls through to the
+            # drone-level command path.
             drone_commands: list[Command] = []
             for cmd in queued:
                 if cmd.type == "set_priority":
                     coordinator.apply_zone_command(cmd, world)
+                elif cmd.type == "set_intel_pin":
+                    coordinator.apply_intel_pin_command(cmd, world)
                 else:
                     drone_commands.append(cmd)
 
@@ -623,6 +632,7 @@ async def simulation_loop() -> None:
                 "world_size": world_size,
                 "chunk_size": chunked_config.chunk_size,
                 "zones": coordinator.serialize_zones(),
+                "intel_pins": coordinator.serialize_intel_pins(),
             }
 
             # One-shot notifications for each clue discovered this tick —

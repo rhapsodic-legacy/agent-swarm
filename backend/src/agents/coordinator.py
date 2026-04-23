@@ -123,6 +123,26 @@ def _point_in_polygon(x: float, z: float, polygon: tuple[tuple[float, float], ..
     return inside
 
 
+@dataclass(frozen=True)
+class IntelPin:
+    """A point-based priority injected by natural language / operator intel.
+
+    Circular area of influence. Unlike a zone, it doesn't need a polygon —
+    the operator says "check the valley 2km south" and we drop a pin. The
+    market picks it up as a PriorityAsset with source="intel_pin", so all
+    the same feasibility + switching-cost logic applies uniformly.
+    """
+
+    pin_id: str
+    x: float
+    z: float
+    radius: float           # effective influence radius (meters)
+    value: float            # base urgency (1.0 = normal; raise for critical intel)
+    label: str              # operator-facing note ("valley check", "last known sighting")
+    created_tick: int
+    expires_tick: int | None = None  # None = persistent until dismissed
+
+
 @dataclass
 class DroneAgent:
     """Mutable per-drone agent state (lives outside the immutable sim state)."""
@@ -206,9 +226,11 @@ class SwarmCoordinator:
         self._poc_claimed: set[tuple[int, int]] = set()
         # User-drawn priority zones (operator "paint" commands)
         self.zones: dict[str, PriorityZone] = {}
+        # LLM- / chat-injected intel pins (point-based priority with TTL)
+        self.intel_pins: dict[str, IntelPin] = {}
         # Priority market — unified auction-based task allocation. Every
-        # tick, all priority sources (PoC hotspots, operator zones, future
-        # intel pins / survivor finds / LLM goals) are merged into one
+        # tick, all priority sources (PoC hotspots, operator zones, intel
+        # pins, future survivor finds / LLM goals) are merged into one
         # PriorityAsset list; drones bid; winners get assignments.
         self._weights = PriorityWeights()
         self._market_tick: int = -1
@@ -415,10 +437,181 @@ class SwarmCoordinator:
             for z in self.zones.values()
         ]
 
+    # ------------------------------------------------------------ intel pins
+    def apply_intel_pin_command(
+        self, command: Command, world: WorldState | None = None,
+    ) -> None:
+        """Create, delete, or clear LLM-injected / operator intel pins.
+
+        The command's `data` carries the payload:
+          * action: "create" | "delete" | "clear"
+          * pin_id: str (required for create/delete)
+          * position: [x, z]  (required for create)
+          * radius: float, default 400m
+          * value: float, default 1.0 (multiplied by source_scale["intel_pin"])
+          * label: str
+          * ttl_s: float | None  (how many sim seconds before auto-expire)
+        """
+        data = command.data or {}
+        action = str(data.get("action", "create")).lower()
+        pin_id = command.zone_id or data.get("pin_id")
+        tick = world.tick if world is not None else 0
+        elapsed = world.elapsed if world is not None else 0.0
+
+        if action == "clear":
+            self.intel_pins.clear()
+            self._poc_cache_tick = -1  # force market rebuild
+            self._log(tick, elapsed, None, "All intel pins cleared.", "decision")
+            return
+
+        if not pin_id:
+            return
+
+        if action == "delete":
+            existing = self.intel_pins.pop(pin_id, None)
+            if existing is not None:
+                self._poc_cache_tick = -1
+                self._log(
+                    tick, elapsed, None,
+                    f"Intel pin '{pin_id}' ({existing.label or 'unnamed'}) dismissed.",
+                    "decision",
+                )
+            return
+
+        pos = data.get("position")
+        if not isinstance(pos, (list, tuple)) or len(pos) < 2:
+            return
+        x = float(pos[0])
+        z = float(pos[1])
+        radius = float(data.get("radius", 400.0))
+        value = float(data.get("value", 1.0))
+        label = str(data.get("label", ""))
+        ttl_s = data.get("ttl_s")
+        expires_tick: int | None = None
+        if ttl_s is not None and world is not None:
+            expires_tick = int(tick + float(ttl_s) * world.tick_rate)
+
+        pin = IntelPin(
+            pin_id=pin_id, x=x, z=z,
+            radius=radius, value=value, label=label,
+            created_tick=tick, expires_tick=expires_tick,
+        )
+        self.intel_pins[pin_id] = pin
+        self._poc_cache_tick = -1  # force market rebuild
+
+        self._log(
+            tick, elapsed, None,
+            f"Intel pin '{pin_id}' placed at ({x:.0f}, {z:.0f})"
+            + (f" — {label}" if label else "")
+            + (f" [ttl {ttl_s:.0f}s]" if ttl_s is not None else ""),
+            "decision",
+        )
+
+    def _expire_intel_pins(self, world: WorldState) -> None:
+        """Drop intel pins whose TTL elapsed this tick."""
+        if not self.intel_pins:
+            return
+        expired = [
+            pid for pid, p in self.intel_pins.items()
+            if p.expires_tick is not None and world.tick >= p.expires_tick
+        ]
+        for pid in expired:
+            pin = self.intel_pins.pop(pid)
+            self._log(
+                world.tick, world.elapsed, None,
+                f"Intel pin '{pid}' expired ({pin.label or 'unnamed'}).",
+                "info",
+            )
+        if expired:
+            self._poc_cache_tick = -1  # force market rebuild next tick
+
+    def build_status_summary(self, world: WorldState) -> dict:
+        """Compact metrics snapshot for the chat handler to cite in replies.
+
+        Gives the LLM real numbers so it can't hallucinate status. Quadrants
+        are measured against base position, not world center, because the
+        operator reasons about "north of base" not "north of map".
+        """
+        from collections import Counter
+
+        base = world.base_position
+        active = [d for d in world.drones if d.status == DroneStatus.ACTIVE]
+        rtb = sum(1 for d in world.drones if d.status == DroneStatus.RETURNING)
+        failed = sum(1 for d in world.drones if d.status == DroneStatus.FAILED)
+        batt_vals = [d.battery for d in active]
+
+        # Quadrant coverage based on drone positions relative to base
+        quadrant_counts: Counter[str] = Counter()
+        for d in active:
+            dx = d.position.x - base.x
+            dz = d.position.z - base.z
+            if dx >= 0 and dz >= 0:
+                quadrant_counts["NE"] += 1
+            elif dx >= 0 and dz < 0:
+                quadrant_counts["SE"] += 1
+            elif dx < 0 and dz >= 0:
+                quadrant_counts["NW"] += 1
+            else:
+                quadrant_counts["SW"] += 1
+
+        survivors_found = sum(1 for s in world.survivors if s.discovered)
+        total_survivors = len(world.survivors)
+
+        # Task breakdown (no peeling off INVESTIGATING etc. — this tells
+        # Claude what the swarm is actually doing)
+        tasks: Counter[str] = Counter()
+        for d in active:
+            agent = self.agents.get(d.id)
+            if agent is not None:
+                tasks[agent.task.name] += 1
+
+        return {
+            "tick": world.tick,
+            "elapsed_s": round(world.elapsed, 1),
+            "phase": self.phase.name,
+            "base_position": [round(base.x, 0), round(base.z, 0)],
+            "fleet": {
+                "active": len(active),
+                "returning_to_base": rtb,
+                "failed": failed,
+                "battery_min": round(min(batt_vals), 1) if batt_vals else None,
+                "battery_mean": round(sum(batt_vals) / len(batt_vals), 1) if batt_vals else None,
+            },
+            "survivors": {
+                "found": survivors_found,
+                "known_total": total_survivors,
+            },
+            "quadrants_from_base": dict(quadrant_counts),
+            "tasks": dict(tasks),
+            "zones_active": [
+                {"zone_id": z.zone_id, "priority": z.priority, "bbox": z.bbox}
+                for z in self.zones.values()
+            ],
+            "intel_pins_active": [
+                {"pin_id": p.pin_id, "position": [p.x, p.z], "label": p.label}
+                for p in self.intel_pins.values()
+            ],
+        }
+
+    def serialize_intel_pins(self) -> list[dict]:
+        return [
+            {
+                "pin_id": p.pin_id,
+                "position": [p.x, p.z],
+                "radius": p.radius,
+                "value": p.value,
+                "label": p.label,
+                "created_tick": p.created_tick,
+                "expires_tick": p.expires_tick,
+            }
+            for p in self.intel_pins.values()
+        ]
+
     def update(self, world: WorldState, config: SimConfig) -> list[Command]:
         """Produce commands for all active drones based on current world state."""
         self.tick_count += 1
         commands: list[Command] = []
+        self._expire_intel_pins(world)
 
         # Ensure all drones have agent state
         for drone in world.drones:
@@ -895,6 +1088,22 @@ class SwarmCoordinator:
                     radius=80.0,
                     value=float(poc_val),
                     source=source,
+                )
+            )
+
+        # LLM / operator intel pins → PriorityAssets. Unlike PoC cells, intel
+        # pins carry explicit value directly (no PoC-magnitude scaling), so
+        # the per-source saturation naturally absorbs multiple drones.
+        for pin in self.intel_pins.values():
+            assets.append(
+                PriorityAsset(
+                    asset_id=f"intel_{pin.pin_id}",
+                    x=float(pin.x),
+                    z=float(pin.z),
+                    radius=float(pin.radius),
+                    value=float(pin.value),
+                    source="intel_pin",
+                    expires_tick=pin.expires_tick,
                 )
             )
 
