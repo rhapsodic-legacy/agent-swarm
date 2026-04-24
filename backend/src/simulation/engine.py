@@ -12,6 +12,7 @@ from dataclasses import replace
 import numpy as np
 
 from src.simulation.drone import (
+    WindFn,
     check_drone_failures,
     compute_comms_links,
     create_drone_fleet,
@@ -64,6 +65,7 @@ def tick(
     commands: list[Command] | None = None,
     rng: np.random.Generator | None = None,
     config: SimConfig | None = None,
+    wind_fn: WindFn | None = None,
 ) -> WorldState:
     """Advance the simulation by one timestep.
 
@@ -93,13 +95,13 @@ def tick(
 
     # --- 2. Update drone physics ---
     heightmap = world.terrain.heightmap
-    drones = [update_drone_physics(d, dt, heightmap, config) for d in drones]
+    drones = [update_drone_physics(d, dt, heightmap, config, wind_fn=wind_fn) for d in drones]
 
     # --- 3. Update drone batteries ---
     updated_drones: list[Drone] = []
     for d in drones:
         old_status = d.status
-        d = update_drone_battery(d, dt, config)
+        d = update_drone_battery(d, dt, config, wind_fn=wind_fn)
 
         if d.status == DroneStatus.FAILED and old_status != DroneStatus.FAILED:
             events.append(SimEvent(EventType.DRONE_FAILED, new_tick, drone_id=d.id))
@@ -319,6 +321,7 @@ def tick_chunked(
     commands: list[Command] | None = None,
     rng: np.random.Generator | None = None,
     config: SimConfig | None = None,
+    wind_fn: WindFn | None = None,
 ) -> WorldState:
     """Advance simulation by one timestep using chunked terrain lookups.
 
@@ -352,6 +355,7 @@ def tick_chunked(
             d, dt, None, config,
             height_fn=cw.get_heightmap_at,
             world_bounds=bounds,
+            wind_fn=wind_fn,
         )
         for d in drones
     ]
@@ -360,7 +364,7 @@ def tick_chunked(
     updated_drones: list[Drone] = []
     for d in drones:
         old_status = d.status
-        d = update_drone_battery(d, dt, config)
+        d = update_drone_battery(d, dt, config, wind_fn=wind_fn)
 
         if d.status == DroneStatus.FAILED and old_status != DroneStatus.FAILED:
             events.append(SimEvent(EventType.DRONE_FAILED, new_tick, drone_id=d.id))

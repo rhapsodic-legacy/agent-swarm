@@ -7,6 +7,7 @@ import { TerrainRenderer } from "@/scene/terrain";
 import { DroneRenderer } from "@/entities/drones";
 import { FogOfWarRenderer } from "@/fog/fogOfWar";
 import { OverlayRenderer } from "@/entities/overlays";
+import { WindFieldRenderer } from "@/entities/windField";
 import { InteractionManager } from "@/ui/interaction";
 import { ZoneTool } from "@/ui/zoneTool";
 import { ZoneRenderer } from "@/entities/zones";
@@ -98,6 +99,7 @@ const terrainRenderer = new TerrainRenderer(scene);
 const droneRenderer = new DroneRenderer(scene, 100);
 const fogRenderer = new FogOfWarRenderer(scene);
 const overlayRenderer = new OverlayRenderer(scene, 100, 50);
+const windField = new WindFieldRenderer(scene);
 
 // ============================================================================
 // State
@@ -504,6 +506,10 @@ function animate(now: number = 0): void {
       dt,
       latestState.evidence,
     );
+    if (worldSize > 0) {
+      windField.initialize(worldSize);
+      windField.update(latestState.agent_info?.weather);
+    }
     // Only show god mode survivors on loaded terrain chunks
     const chunkSz = (latestState as unknown as Record<string, unknown>).chunk_size as number | undefined;
     const visibleSurvivors = chunkSz && latestState.all_survivors

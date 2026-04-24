@@ -268,6 +268,11 @@ class SimConfig:
     night_penalty: float = 0.4  # detection multiplier at night (0-1)
     transponder_range: float = 200.0  # range at which transponder-equipped survivors are always detected
     transponder_ratio: float = 0.0  # fraction of survivors with transponders (0 = none)
+    # Wind — drag force and battery penalty.
+    # Drag: 0.0 = no effect; 0.5 = stationary drone drifts at half wind speed after 1s.
+    # Battery: headwind equal to drone's max speed adds (factor)×base drain on top of normal.
+    wind_drag_coef: float = 0.4
+    wind_battery_factor: float = 0.6
 
 
 @dataclass(frozen=True)

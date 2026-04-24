@@ -538,13 +538,18 @@ async def simulation_loop() -> None:
             # earlier ones. Documented contract: human overrides agent.
             commands = agent_commands + drone_commands
 
-            # Tick with chunked terrain
-            world = tick_chunked(world, dt * sim_speed, chunked_world, commands, rng=rng, config=sim_config)
+            # Update weather BEFORE the tick so this tick's physics sees
+            # the same wind that gets broadcast alongside the state snapshot.
+            weather.update(world.elapsed)
+
+            # Tick with chunked terrain (wind_fn queries live weather)
+            world = tick_chunked(
+                world, dt * sim_speed, chunked_world, commands,
+                rng=rng, config=sim_config, wind_fn=weather.get_wind_at,
+            )
             current_world = world
 
-
-            # Update environmental systems
-            weather.update(world.elapsed)
+            # Update remaining environmental systems
             daycycle.update(world.elapsed)
             metrics.record_tick(world)
             replay.record(world)

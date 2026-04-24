@@ -27,6 +27,8 @@ from src.simulation.types import (
 # Type alias for terrain lookup callables
 HeightFn = Callable[[float, float], float]
 BiomeFn = Callable[[float, float], int]
+# Wind lookup: returns wind vector (Vec3, Y=0) at world position (x, z).
+WindFn = Callable[[float, float], Vec3]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -71,6 +73,7 @@ def update_drone_physics(
     *,
     height_fn: HeightFn | None = None,
     world_bounds: tuple[int, int] | None = None,
+    wind_fn: WindFn | None = None,
 ) -> Drone:
     """Advance drone position/velocity by *dt* seconds.
 
@@ -144,6 +147,18 @@ def update_drone_physics(
         drone.position.z + new_vel.z * dt,
     )
 
+    # --- wind displacement -------------------------------------------------
+    # Wind is modeled as net position drift after imperfect controller
+    # compensation: drag_coef scales how much of the wind vector translates
+    # to actual drone displacement per second. Horizontal only.
+    if wind_fn is not None and config.wind_drag_coef > 0.0:
+        wind = wind_fn(new_pos.x, new_pos.z)
+        new_pos = Vec3(
+            new_pos.x + wind.x * config.wind_drag_coef * dt,
+            new_pos.y,
+            new_pos.z + wind.z * config.wind_drag_coef * dt,
+        )
+
     # --- clamp position within terrain bounds ------------------------------
     clamped_x = min(max(new_pos.x, 0.0), float(terrain_w - 1))
     clamped_z = min(max(new_pos.z, 0.0), float(terrain_h - 1))
@@ -165,8 +180,14 @@ def update_drone_physics(
 # ---------------------------------------------------------------------------
 
 
-def update_drone_battery(drone: Drone, dt: float, config: SimConfig) -> Drone:
-    """Drain battery based on speed, altitude, and sensor usage.
+def update_drone_battery(
+    drone: Drone,
+    dt: float,
+    config: SimConfig,
+    *,
+    wind_fn: WindFn | None = None,
+) -> Drone:
+    """Drain battery based on speed, altitude, sensor usage, and wind.
 
     Returns a new Drone with updated battery and possibly a new status
     (RETURNING if critical, FAILED if empty).
@@ -184,6 +205,20 @@ def update_drone_battery(drone: Drone, dt: float, config: SimConfig) -> Drone:
 
     if drone.sensor_active:
         drain *= 1.20  # +20 %
+
+    # Wind: flying into a headwind drains faster; tailwind does not refund.
+    # headwind_scalar = max(0, -wind . v_unit) / max_speed, clamped to ~1.0.
+    if wind_fn is not None and config.wind_battery_factor > 0.0:
+        wind = wind_fn(drone.position.x, drone.position.z)
+        horiz_speed = (drone.velocity.x**2 + drone.velocity.z**2) ** 0.5
+        if horiz_speed > 0.5:
+            vhat_x = drone.velocity.x / horiz_speed
+            vhat_z = drone.velocity.z / horiz_speed
+            # Positive when wind blows against direction of travel.
+            head_ms = -(wind.x * vhat_x + wind.z * vhat_z)
+            if head_ms > 0.0:
+                head_ratio = min(head_ms / max(drone.max_speed, 1.0), 1.5)
+                drain *= 1.0 + config.wind_battery_factor * head_ratio
 
     new_battery = max(drone.battery - drain, 0.0)
 
