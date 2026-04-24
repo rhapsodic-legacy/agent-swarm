@@ -63,6 +63,7 @@ Every priority signal in the swarm — PoC hotspots, operator-painted zones, LLM
 **Why this matters**: the "incorruptible baseline" — no matter how many input modalities ship (voice, partner-swarm, sensor fusion, regulatory no-fly feeds), they all compose into the same pipeline without touching drone logic. This mirrors real-robotics substrate design.
 
 **Read the code**: [`backend/src/agents/priority_market.py`](backend/src/agents/priority_market.py)
+**Read the writeup**: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — why this specific shape, what it cost, what it bought
 
 ### Adaptive weights + trust slider
 
