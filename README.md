@@ -1,176 +1,267 @@
-# Autonomous Drone Swarm Coordination Simulator   
+# Autonomous Drone Swarm Coordination Simulator
 
-A real-time multi-agent simulation of autonomous drones performing search-and-rescue over procedurally generated terrain. Features a three-tier hybrid AI architecture, browser-based 3D visualization with fog-of-war, and human-in-the-loop interaction via natural language.
+A real-time, browser-visualized simulation of an autonomous drone swarm performing search-and-rescue over procedurally generated terrain — with a unified priority-market substrate that fuses operator intent, LLM strategy, and environmental hazards into one signal the swarm bids on every tick.
 
-![Drone Swarm](https://img.shields.io/badge/drones-multi--agent-00c8ff) ![Python](https://img.shields.io/badge/python-3.11+-blue) ![Three.js](https://img.shields.io/badge/three.js-3D-green) ![Claude](https://img.shields.io/badge/claude-mission_planner-ff6b00) ![Mistral](https://img.shields.io/badge/mistral-drone_AI-purple)
+![Agents](https://img.shields.io/badge/agents-hybrid_classical+LLM-00c8ff) ![Python](https://img.shields.io/badge/python-3.12-blue) ![Three.js](https://img.shields.io/badge/three.js-WebGL-green) ![Claude](https://img.shields.io/badge/claude-mission_planner-ff6b00) ![Mistral](https://img.shields.io/badge/mistral-drone_reasoner-purple) ![Tests](https://img.shields.io/badge/tests-304_backend_+_11_frontend-success)
+
+---
+
+## What This Demonstrates
+
+- **Multi-agent coordination under partial observability** — fog-of-war, range-limited comms, per-drone belief maps
+- **Human-AI teaming** — natural-language operator commands, zone painting, adaptive weights, trust slider
+- **Hybrid AI architecture** — classical reactive layer (20Hz) + LLM deliberative layer (async, event-driven)
+- **A unified signal substrate** — every priority input (operator, LLM, environment, past outcomes) flows through one auction. Adding a new input source is a one-line producer; drones never change.
+- **Reproducibility** — fully seeded terrain, survivor placement, weather, and gust cycles
 
 ## Quick Start
 
 ```bash
-make install   # Install Python + Node dependencies
-make run       # Start backend + frontend
+make install   # Python + Node dependencies
+make run       # Backend :8765 + frontend :5173
 # Open http://localhost:5173
 ```
 
-## What It Does
+The system works **fully without API keys** — classical AI handles everything. Drop Anthropic / Mistral keys into `backend/.env` to light up the LLM tiers.
 
-Twenty autonomous drones deploy from a central base and search procedurally generated terrain for survivors. They coordinate through range-limited communication, adapt when drones fail, and accept human commands via natural language.
+---
 
-### The Simulation
+## The Architectural Story — The Priority Market
 
-- **Procedural terrain** — Multi-octave simplex noise generates unique landscapes with 6 biomes (water, beach, forest, urban, mountain, snow)
-- **Realistic drone physics** — Smooth acceleration, battery drain (speed/altitude/sensor dependent), altitude maintenance above terrain
-- **Sensor model** — Distance-based detection probability, range-limited field of view
-- **Communication constraints** — Drones can only share information with neighbors within 100m
-- **Failure modes** — Random sensor/comms failures, battery depletion, with automatic reassignment
-- **Fog-of-war** — Partial observability — the map reveals only where drones have searched
-
-### Three-Tier AI Architecture
+Every priority signal in the swarm — PoC hotspots, operator-painted zones, LLM intel pins, recent survivor finds, environmental hazards — is a `PriorityAsset`. Drones bid on assets through **one** `bid()` function. A market-clearing step resolves all assignments globally each tick.
 
 ```
-┌─────────────────────────────────────────────────┐
-│  Tier 1: Claude (Mission Planner)               │
-│  Strategic decisions every ~10s                  │
-│  Zone priorities, fleet reassignment, briefings  │
-├─────────────────────────────────────────────────┤
-│  Tier 2: Mistral (Drone Reasoner)               │
-│  Tactical decisions every ~5s per drone          │
-│  Local search/investigate/reposition decisions   │
-├─────────────────────────────────────────────────┤
-│  Tier 3: Classical AI (every tick, 20Hz)         │
-│  A* pathfinding, lawnmower/frontier/priority     │
-│  search, potential field repulsion, zone sweeps  │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│  Producers (compose freely — add one, swarm rebalances)          │
+├──────────────────────────────────────────────────────────────────┤
+│  Bayesian PoC grid    → PriorityAsset(source="poc_field")        │
+│  Operator zone (paint)→ PriorityAsset(source="operator_high_zone")│
+│  LLM / chat intel pin → PriorityAsset(source="intel_pin")        │
+│  Survivor discovery   → PriorityAsset(source="survivor_find")    │
+│  Avoid signals        → is_in_avoid_zone(x, z) callback          │
+│   ├─ operator avoid zone                                          │
+│   └─ active wind gust region                                     │
+└──────────────────────────────────────────────────────────────────┘
+                             │
+                             ▼
+            ┌─────────────────────────────────────┐
+            │ clear_market() — global auction     │
+            │                                      │
+            │ bid = value × source_scale           │
+            │      / (1 + dist × penalty)          │
+            │      / (1 + switching_cost[task])    │
+            │                                      │
+            │ Filters: battery-infeasible → 0      │
+            │          in avoid region  → skipped  │
+            │ Capacity: per-asset saturation       │
+            └─────────────────────────────────────┘
+                             │
+                             ▼
+               Per-drone assignment this tick
 ```
 
-- **Classical AI** handles the real-time 20Hz loop — no API latency
-- **LLMs** provide strategic/tactical intelligence on a slower cadence
-- System works fully without LLM API keys (classical AI fallback)
+**Why this matters**: the "incorruptible baseline" — no matter how many input modalities ship (voice, partner-swarm, sensor fusion, regulatory no-fly feeds), they all compose into the same pipeline without touching drone logic. This mirrors real-robotics substrate design.
 
-### Human-in-the-Loop
+**Read the code**: [`backend/src/agents/priority_market.py`](backend/src/agents/priority_market.py)
 
-- **Click** a drone to select it and see its status
-- **Right-click** terrain to send a selected drone to that location
-- **Natural language chat** (press T) — "Focus search on the north", "Pull back drone 7", "What's our status?"
-- The system **adapts** to human overrides and records preferences
+### Adaptive weights + trust slider
 
-## Architecture
+The market's per-source scales aren't hardcoded. An [`AdaptiveWeights`](backend/src/agents/adaptive_weights.py) layer learns from outcomes: operator assets that produced finds get up-weighted; unused assets decay. A top-right **trust slider** (0.0–3.0) multiplies operator-origin sources at runtime — the operator can dial autonomy up or down live.
+
+---
+
+## Three-Tier Hybrid AI
 
 ```
-Browser (Three.js + TypeScript)
-    │ WebSocket (JSON, 20Hz)
+┌─────────────────────────────────────────────────────────────┐
+│  Tier 1 — Mission Planner (Claude)                           │
+│  Trigger: event-driven (find, loss, phase transition)        │
+│  Scope:   fleet-wide strategy, briefings, zone priorities    │
+│  File:    backend/src/agents/mission_planner.py              │
+├─────────────────────────────────────────────────────────────┤
+│  Tier 2 — Drone Reasoner (Mistral)                           │
+│  Trigger: every ~5s per drone, async, rate-limited           │
+│  Scope:   tactical — investigate / reposition / local search │
+│  File:    backend/src/agents/drone_reasoner.py               │
+├─────────────────────────────────────────────────────────────┤
+│  Tier 3 — Classical Controller (every tick, 20Hz)            │
+│  Trigger: synchronous tick loop                              │
+│  Scope:   A* pathfinding, lawnmower/frontier/priority search,│
+│           potential-field repulsion, market bidding          │
+│  File:    backend/src/agents/coordinator.py                  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+- Classical AI handles the real-time loop — **zero API latency** on the critical path
+- LLMs are always in fallback mode: if an API fails, the classical tier carries the mission
+- Every LLM prompt lives in [`backend/src/agents/prompts/`](backend/src/agents/prompts/) as a Jinja2 template — no inline strings
+
+---
+
+## Human-in-the-Loop
+
+| Input modality | How it flows | File |
+|---|---|---|
+| Click a drone → right-click terrain | Direct `move_to` command, overrides agent within the tick | [`interaction.ts`](frontend/src/ui/interaction.ts) |
+| Paint a zone (press `Z`) | `set_priority` → `PriorityZone` → market source scale / filter | [`zoneTool.ts`](frontend/src/ui/zoneTool.ts) |
+| Chat (press `T`) | Claude parses → emits `set_intel_pin` / `zone_command` / `dismiss_intel_pin` with real coords | [`chat_handler.py`](backend/src/agents/chat_handler.py) |
+| Trust slider (top-right) | Live multiplier on operator-origin priority sources | [`trustPanel.ts`](frontend/src/ui/trustPanel.ts) |
+
+The system **records operator overrides** (`AdaptiveWeights.record_operator_override`) and bumps switching costs on that task type so the swarm learns what the operator actually cares about.
+
+---
+
+## Dynamic Environment
+
+**Wind affects physics.** `WeatherSystem` produces a live wind vector at each (x, z). `update_drone_physics` adds net displacement scaled by `wind_drag_coef`; `update_drone_battery` multiplies drain for drones flying into headwinds. ([`drone.py`](backend/src/simulation/drone.py))
+
+**Gust regions feed the market.** 6 discrete `GustRegion`s (seeded deterministically) cycle on/off on independent 60–150s sine periods. Active regions act as environmental avoid zones: the market skips PoC and intel assets inside them; in-flight drones have their targets scrubbed and re-bid. ([`weather.py`](backend/src/simulation/weather.py))
+
+```
+weather.is_hazardous_at → composes with operator avoid zones → one callback in clear_market
+```
+
+This is the substrate story made literal: an environmental signal becomes an operator-equivalent avoid zone with no special-case code in the drones.
+
+**Day/night cycle** ([`daycycle.py`](backend/src/simulation/daycycle.py)) modulates sensor effectiveness and sun lighting. **Static hazards** ([`hazards.py`](backend/src/simulation/hazards.py)) — no-fly zones and signal jammers — layer in similarly.
+
+---
+
+## Simulation Features
+
+- **Procedural terrain** — Multi-octave OpenSimplex with 6 biomes (water, beach, forest, urban, mountain, snow). Chunked world system scales to 10km × 10km at 1024m chunks ([`terrain/chunked.py`](backend/src/terrain/chunked.py))
+- **Realistic drone physics** — acceleration clamping, cruise-altitude tracking, wind drag, sensor/comms/battery failure modes
+- **Multi-factor detection** — biome occlusion × altitude curve × weather visibility × terrain line-of-sight × optional transponder beacons
+- **Bayesian search map** — Probability-of-Containment (PoC) grid updated on every failed scan and re-focused on evidence discoveries ([`search_map.py`](backend/src/simulation/search_map.py))
+- **Evidence trails** — footprints, debris, signal fires; each has a distinct posterior-update geometry (cone / ring / circle)
+- **Mobile survivors** — ~40% wander with biome-aware random walk until discovered
+- **5 missions** — `aircraft_crash`, `lost_hiker`, `maritime_sar`, `avalanche`, `disaster_response` — each seeds a different mission-specific prior ([`mission.py`](backend/src/simulation/mission.py))
+- **Replay system** — full recording + replay for retrospective analysis ([`replay.py`](backend/src/simulation/replay.py))
+- **Metrics dashboard** — MTTD, survival window %, entropy drop %, coverage rate, efficiency score ([`metrics.py`](backend/src/simulation/metrics.py))
+
+---
+
+## System Architecture
+
+```
+Browser (Three.js + TypeScript, strict mode)
+    │  WebSocket (JSON, 10–20Hz)
     ▼
 Python Backend (FastAPI + asyncio)
-    ├── Simulation Engine (20Hz fixed timestep)
-    │   ├── Terrain Generator (OpenSimplex noise)
-    │   ├── Drone Physics (acceleration, battery, sensors)
-    │   └── Event System (discoveries, failures)
+    ├── Simulation Engine (fixed timestep, immutable state)
+    │   ├── Terrain (procedural, chunked)
+    │   ├── Drone physics (wind-aware)
+    │   ├── Detection (multi-factor)
+    │   ├── Weather / daycycle / hazards
+    │   └── Bayesian search map (PoC)
     ├── Agent Layer
-    │   ├── Classical AI (A*, search patterns, coordination)
-    │   ├── Claude Mission Planner (strategic, async)
-    │   ├── Mistral Drone Reasoner (tactical, async)
-    │   └── Chat Handler (NL command interpretation)
-    └── WebSocket Server (state broadcast + commands)
+    │   ├── Classical: A*, search patterns, coordinator, priority market
+    │   ├── Adaptive weights + trust slider
+    │   ├── Claude mission planner (async)
+    │   ├── Mistral drone reasoner (async)
+    │   └── Chat handler (NL → commands)
+    └── WebSocket server (state broadcast + command ingestion)
 ```
 
-## Controls
+### Module boundaries (strict)
 
-| Action | Input |
-|--------|-------|
-| Orbit camera | Mouse drag |
-| Zoom | Scroll wheel |
-| Select drone | Left-click drone |
-| Send drone | Right-click terrain (with drone selected) |
-| Pause / Resume | Space |
-| Speed 1x / 2x / 5x | 1 / 2 / 3 |
-| New simulation | N |
-| Toggle chat | T |
-| Close chat | Escape |
+- `backend/` — pure Python. Owns all simulation state. Never imports frontend.
+- `frontend/` — pure TypeScript / Three.js. Never runs sim logic. Renders received state.
+- [`shared/protocol.md`](shared/protocol.md) — the WebSocket schema. Source of truth for both sides.
 
-## Project Structure
+---
 
-```
-agent_swarm/
-├── backend/
-│   ├── src/
-│   │   ├── simulation/     # Core engine: physics, terrain, state, serialization
-│   │   ├── agents/          # AI layer: pathfinding, search, LLM integration
-│   │   │   └── prompts/     # LLM prompt templates
-│   │   ├── server/          # FastAPI WebSocket server
-│   │   └── terrain/         # Procedural terrain generator
-│   └── tests/               # 91 tests
-├── frontend/
-│   └── src/
-│       ├── scene/           # Three.js terrain renderer
-│       ├── entities/        # Drone meshes, overlays
-│       ├── fog/             # Fog-of-war DataTexture
-│       ├── network/         # WebSocket client + types
-│       └── ui/              # Interaction, chat panel
-├── shared/
-│   └── protocol.md          # WebSocket message schema
-├── Makefile                  # One-command operations
-└── CLAUDE.md                 # AI development context
-```
+## Code Tour — 10-Minute Read
 
-## Tech Stack
+If you want to understand the system top-down:
 
-| Layer | Technology | Why |
-|-------|-----------|-----|
-| 3D Visualization | Three.js | Free, performant instanced rendering |
-| Frontend Build | Vite + TypeScript | Fast HMR, strict types |
-| Backend | Python + FastAPI | Async WebSocket, AI/ML ecosystem |
-| Simulation | NumPy | Vectorized physics, fog-of-war |
-| Terrain | OpenSimplex | Reproducible procedural generation |
-| Strategic AI | Claude API | Mission planning, NL interface |
-| Tactical AI | Mistral API (free tier) | Per-drone reasoning |
-| Pathfinding | A* + Potential Fields | Real-time, deterministic |
+1. [`backend/src/agents/priority_market.py`](backend/src/agents/priority_market.py) — 200 lines. The unifying abstraction. Read `bid()` and `clear_market()`.
+2. [`backend/src/agents/coordinator.py`](backend/src/agents/coordinator.py) — look at `_run_priority_market` and `_invalidate_targets_in_wind_gusts` for the is_in_avoid composition.
+3. [`backend/src/simulation/drone.py`](backend/src/simulation/drone.py) — `update_drone_physics` and `update_drone_battery`. Notice how `wind_fn` and `height_fn` follow the same optional-callable pattern.
+4. [`backend/src/agents/adaptive_weights.py`](backend/src/agents/adaptive_weights.py) — how outcomes feed back into source scales.
+5. [`backend/src/agents/chat_handler.py`](backend/src/agents/chat_handler.py) — Claude translates natural language into the same `PriorityAsset` stream the operator uses.
+6. [`shared/protocol.md`](shared/protocol.md) — the full wire schema.
 
-## Optional: LLM API Keys
+---
 
-The system works fully without API keys (classical AI only). To enable LLM agents:
+## Running & Testing
 
 ```bash
-cp .env.example backend/.env
-# Edit backend/.env:
-# ANTHROPIC_API_KEY=sk-ant-...
-# MISTRAL_API_KEY=...
+make run           # Backend + frontend
+make backend       # Backend only (WebSocket server at :8765)
+make frontend      # Frontend only (Vite dev server at :5173)
+make headless      # Run the sim with no browser
+make test          # 304 backend tests
+make typecheck     # ruff + tsc
+make format        # ruff + prettier
 ```
 
-## Development
+Frontend tests:
 
 ```bash
-make test       # Run 91 backend tests
-make lint       # Lint Python + TypeScript
-make typecheck  # Type-check all code
-make format     # Auto-format all code
-make headless   # Run simulation without browser
+cd frontend && npx vitest run   # 11 tests
 ```
+
+Headless wind-drift repro:
+
+```bash
+cd backend && uv run python -m scripts.wind_repro
+```
+
+---
 
 ## Performance
 
 | Metric | Value |
-|--------|-------|
-| Simulation tick rate | 1,400+ ticks/sec (70x real-time) |
-| WebSocket update size | ~4 KB per tick |
-| Terrain initial payload | ~360 KB (128x128) |
-| Drone fleet rendering | Single draw call (InstancedMesh) |
-| Frontend frame budget | < 8ms at 60fps |
-
-## Key Design Decisions
-
-- **Immutable state** — Each simulation tick produces a new `WorldState`. No mutation between ticks ensures determinism and debuggability.
-- **Hybrid AI** — Mirrors real robotics architectures with reactive (classical) and deliberative (LLM) layers. Demonstrates understanding of both paradigms.
-- **Decentralized communication** — Drones share info only within comms range, creating emergent coordination patterns.
-- **Graceful degradation** — Every LLM feature has a classical fallback. The system never breaks if an API is down.
-
-## Research Areas Demonstrated
-
-- Multi-agent coordination under partial observability
-- Human-AI teaming with adaptive override handling
-- Communication-constrained distributed systems
-- Hybrid classical/neural AI architectures
-- Real-time simulation with browser-based visualization
+|---|---|
+| Sim tick rate (headless) | 1,400+ ticks/sec (~70× real-time) |
+| WebSocket update | ~4 KB per tick |
+| Chunked world size | 10,240 m × 10,240 m |
+| Drone fleet render | single draw call (`InstancedMesh`) |
+| Frontend frame budget | < 8 ms at 60 FPS |
+| Backend tests | 304 pass, ~6 minutes full suite |
 
 ---
 
-Built with [Claude Code](https://claude.ai/claude-code)
+## Controls
+
+| Action | Input |
+|---|---|
+| Orbit camera | Mouse drag |
+| Zoom | Scroll wheel |
+| Pan | WASD |
+| Select drone | Left-click |
+| Send selected drone | Right-click terrain |
+| Paint priority zone | `Z`, then drag (toggle `high` / `low` / `avoid`) |
+| Chat | `T` (Escape to close) |
+| Pause / resume | Space |
+| Speed 1× / 2× / 5× | `1` / `2` / `3` |
+| New simulation | `N` |
+| Hold position | `X` |
+| Return to base | `B` |
+
+---
+
+## Design Philosophy
+
+- **Immutable state between ticks.** Every tick produces a new `WorldState`. Determinism for free; debuggability for free; replay for free.
+- **Seeded randomness.** Terrain, survivor placement, wind, gust regions all take a seed. A run is fully reproducible.
+- **Optional-callable plumbing.** Chunked-world support, wind, and wind hazards all thread through sim functions as optional `Callable`s — no coupling between layers.
+- **One substrate, many producers.** Operator input, LLM strategy, environmental hazards, and outcome feedback all flow through one priority market. Adding a modality is a one-line composition.
+- **Graceful degradation.** No LLM key? System runs on the classical tier. API errors? Fall back to cached decisions. The simulation never breaks.
+
+---
+
+## Research Areas Touched
+
+- Multi-agent coordination under partial observability
+- Bayesian search theory (PoC updates on failed scans + evidence geometry)
+- Auction-based task allocation
+- Human-AI teaming with adaptive weight learning
+- Communication-constrained distributed agents
+- Hybrid reactive / deliberative agent architectures
+- Real-time simulation + browser visualization at scale
+
+---
+
+Built with [Claude Code](https://claude.ai/claude-code). The project is also a reference implementation of Claude Code's tooling ecosystem (skills, hooks, hierarchical `CLAUDE.md`, sub-agents).
