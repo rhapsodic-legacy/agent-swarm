@@ -94,6 +94,22 @@ export class SwarmClient {
     this.send({ type: "zone_command", ...payload });
   }
 
+  sendTrustCommand(value: number): void {
+    this.send({ type: "trust_command", value });
+  }
+
+  sendIntelPinCommand(payload: {
+    action: "create" | "delete" | "clear";
+    pin_id?: string;
+    position?: [number, number];
+    radius?: number;
+    value?: number;
+    label?: string;
+    ttl_s?: number | null;
+  }): void {
+    this.send({ type: "intel_pin_command", ...payload });
+  }
+
   onChatResponse(callback: ChatCallback): void {
     this.onChat = callback;
   }

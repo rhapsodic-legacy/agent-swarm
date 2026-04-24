@@ -24,6 +24,7 @@ from src.agents.mission_planner import MissionPlanner
 from src.agents.pathfinding import (
     potential_field_direction,
 )
+from src.agents.adaptive_weights import AdaptiveWeights
 from src.agents.priority_market import (
     PriorityAsset,
     PriorityWeights,
@@ -235,6 +236,13 @@ class SwarmCoordinator:
         self._weights = PriorityWeights()
         self._market_tick: int = -1
         self._market_assignments: dict[int, PriorityAsset] = {}
+        # Adaptive layer (Phase 5D): learns from outcomes, honors a
+        # trust slider. We read effective_weights() each tick instead
+        # of the static PriorityWeights.
+        self.adaptive = AdaptiveWeights(base=self._weights)
+        # Track which asset IDs have already earned a find credit, so one
+        # survivor doesn't get attributed repeatedly.
+        self._credited_assets: set[str] = set()
 
     def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
         """Append an entry to the activity log ring buffer."""
@@ -522,6 +530,12 @@ class SwarmCoordinator:
                 f"Intel pin '{pid}' expired ({pin.label or 'unnamed'}).",
                 "info",
             )
+            # Adaptive credit: if no find was attributed to this pin while
+            # it was active, its source takes a small debit — over time
+            # this teaches the system how reliable operator intel has been.
+            asset_key = f"intel_{pid}"
+            if asset_key not in self._credited_assets:
+                self.adaptive.record_asset_unused(world.tick, "intel_pin", pid)
         if expired:
             self._poc_cache_tick = -1  # force market rebuild next tick
 
@@ -612,6 +626,9 @@ class SwarmCoordinator:
         self.tick_count += 1
         commands: list[Command] = []
         self._expire_intel_pins(world)
+        # Adaptive learning: gently pull learned adjustments toward neutral
+        # each tick so transient noise can't lock in a bad weight.
+        self.adaptive.tick_decay()
 
         # Ensure all drones have agent state
         for drone in world.drones:
@@ -642,6 +659,22 @@ class SwarmCoordinator:
             if event.type.name == "SURVIVOR_FOUND":
                 self._log(world.tick, world.elapsed, event.drone_id,
                           f"Survivor #{event.survivor_id} found!", "event")
+                # Adaptive attribution: credit the operator asset(s) whose
+                # area includes the find location (if any).
+                if event.survivor_id is not None:
+                    surv = next(
+                        (s for s in world.survivors if s.id == event.survivor_id),
+                        None,
+                    )
+                    if surv is not None:
+                        credited = self.adaptive.record_survivor_find(
+                            tick=world.tick,
+                            survivor_xz=(surv.position.x, surv.position.z),
+                            active_zones=list(self.zones.values()),
+                            active_pins=list(self.intel_pins.values()),
+                        )
+                        for _src, asset_key in credited:
+                            self._credited_assets.add(asset_key)
             elif event.type.name == "DRONE_FAILED":
                 self._log(world.tick, world.elapsed, event.drone_id,
                           "Drone failed — battery depleted.", "alert")
@@ -1118,7 +1151,7 @@ class SwarmCoordinator:
             assets=assets,
             base_pos=world.base_position,
             config=self.config,
-            weights=self._weights,
+            weights=self.adaptive.effective_weights(),
             is_in_avoid_zone=is_in_avoid if avoid_zones else None,
         )
 

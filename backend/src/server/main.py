@@ -130,6 +130,8 @@ def parse_command(msg: dict) -> Command | None:
             zone_id=msg.get("pin_id"),  # reuse zone_id slot for pin_id
             data=msg,
         )
+    elif msg_type == "trust_command":
+        return Command(type="set_trust", data=msg)
     elif msg_type == "sim_control":
         action = msg.get("action")
         global sim_running, sim_speed, sim_reset_requested
@@ -510,7 +512,22 @@ async def simulation_loop() -> None:
                     coordinator.apply_zone_command(cmd, world)
                 elif cmd.type == "set_intel_pin":
                     coordinator.apply_intel_pin_command(cmd, world)
+                elif cmd.type == "set_trust":
+                    data = cmd.data or {}
+                    value = data.get("value")
+                    if value is not None:
+                        coordinator.adaptive.set_trust(float(value))
                 else:
+                    # Human-issued drone commands (move_to, RTB, hold).
+                    # Record as overrides so the adaptive layer can learn
+                    # that the drone's prior task wasn't what the operator
+                    # wanted.
+                    if cmd.drone_id is not None:
+                        agent = coordinator.agents.get(cmd.drone_id)
+                        if agent is not None:
+                            coordinator.adaptive.record_operator_override(
+                                world.tick, agent.task.name,
+                            )
                     drone_commands.append(cmd)
 
             # Get AI agent commands
@@ -633,6 +650,7 @@ async def simulation_loop() -> None:
                 "chunk_size": chunked_config.chunk_size,
                 "zones": coordinator.serialize_zones(),
                 "intel_pins": coordinator.serialize_intel_pins(),
+                "adaptive": coordinator.adaptive.summary(),
             }
 
             # One-shot notifications for each clue discovered this tick —

@@ -11,6 +11,7 @@ import { InteractionManager } from "@/ui/interaction";
 import { ZoneTool } from "@/ui/zoneTool";
 import { ZoneRenderer } from "@/entities/zones";
 import { LiveIntelPinRenderer } from "@/entities/intelPins";
+import { TrustPanel } from "@/ui/trustPanel";
 import { ChatPanel } from "@/ui/chatPanel";
 import { SettingsPanel } from "@/ui/settingsPanel";
 import type { SimSettings } from "@/ui/settingsPanel";
@@ -378,6 +379,7 @@ client.onWorldOverview((overview: WorldOverview) => {
 const interaction = new InteractionManager(scene, camera, glRenderer, client);
 const zoneRenderer = new ZoneRenderer(scene);
 const intelPinRenderer = new LiveIntelPinRenderer(scene);
+const trustPanel = new TrustPanel(client);
 const zoneTool = new ZoneTool(scene, camera, glRenderer, controls, client);
 const minimap = new Minimap();
 const chatPanel = new ChatPanel(client);
@@ -523,6 +525,7 @@ function animate(now: number = 0): void {
     interaction.update(latestState.drones);
     zoneRenderer.update(latestState.zones, dt);
     intelPinRenderer.update(latestState.intel_pins, dt);
+    trustPanel.update(latestState.adaptive);
     zoneTool.setZones(latestState.zones);
     updateHUD(latestState);
     missionScore.update(latestState.agent_info?.metrics);

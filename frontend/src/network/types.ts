@@ -172,6 +172,14 @@ export interface StateUpdate {
   zones?: ZoneData[];
   /** Live, dynamic intel pins (chat- or LLM-placed point priorities). */
   intel_pins?: LiveIntelPinData[];
+  /** Adaptive-weight summary (Phase 5D trust slider + learned adjustments). */
+  adaptive?: {
+    operator_trust: number;
+    learned_source_scale?: Record<string, number>;
+    learned_switching_cost?: Record<string, number>;
+    recent_outcome_count?: number;
+    recent_outcome_mix?: Record<string, number>;
+  };
 }
 
 export interface WeatherInfo {
