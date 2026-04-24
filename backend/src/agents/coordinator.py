@@ -429,11 +429,11 @@ class SwarmCoordinator:
                 agent.local_sweep_waypoints = None
                 agent.ticks_at_target = 0
                 continue
-            # Also scrub queued sweep waypoints that land in the avoid zone
+            # Also scrub queued sweep waypoints that land in an active gust.
             if agent.local_sweep_waypoints:
                 agent.local_sweep_waypoints = [
                     wp for wp in agent.local_sweep_waypoints
-                    if not inside_avoid(wp.x, wp.z)
+                    if not wind_hazard_fn(wp.x, wp.z)
                 ] or None
 
     def _zone_multiplier(self, x: float, z: float) -> float:

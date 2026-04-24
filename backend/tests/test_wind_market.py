@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.agents.coordinator import DroneTask, SwarmCoordinator
 from src.simulation.engine import create_world
-from src.simulation.types import SimConfig, Vec3
+from src.simulation.types import SimConfig, Vec3  # noqa: F401  (used by new test)
 
 _CFG = SimConfig(
     terrain_size=64,
@@ -94,3 +94,35 @@ def test_wind_hazard_fn_is_cleared_between_ticks():
     coord.update(world, _CFG, wind_hazard_fn=lambda x, z: True)  # all hazardous
     coord.update(world, _CFG, wind_hazard_fn=None)
     assert coord._wind_hazard_fn is None
+
+
+def test_sweep_waypoints_scrubbed_inside_active_gust():
+    """Regression: the waypoint-scrub branch inside
+    _invalidate_targets_in_wind_gusts previously referenced an undefined
+    `inside_avoid` — this test pins the code path by setting up an agent
+    with queued sweep waypoints that straddle a gust boundary.
+    """
+    world = create_world(_CFG)
+    coord = SwarmCoordinator(_CFG)
+    coord.update(world, _CFG)  # seeds agents + zones
+
+    # Pick any agent and give it a sweep queue straddling a boundary.
+    agent = next(iter(coord.agents.values()))
+    agent.local_sweep_waypoints = [
+        Vec3(10.0, 10.0, 10.0),   # safe (west)
+        Vec3(50.0, 10.0, 10.0),   # inside gust (east of x=40)
+        Vec3(20.0, 10.0, 20.0),   # safe
+        Vec3(60.0, 10.0, 30.0),   # inside gust
+    ]
+    agent.current_target = None  # so we exercise the waypoint branch, not target branch
+
+    def east_of_40_is_hazardous(x: float, z: float) -> bool:
+        return x > 40.0
+
+    coord.update(world, _CFG, wind_hazard_fn=east_of_40_is_hazardous)
+
+    remaining = agent.local_sweep_waypoints or []
+    for wp in remaining:
+        assert wp.x <= 40.0, f"Waypoint at x={wp.x} should have been scrubbed"
+    # Two of four should survive
+    assert len(remaining) == 2
