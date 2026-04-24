@@ -182,10 +182,21 @@ export interface StateUpdate {
   };
 }
 
+export interface GustRegionData {
+  /** World-space center (meters). */
+  x: number;
+  z: number;
+  radius: number;
+  /** 0..1 intensity; only regions past the hazard threshold are sent. */
+  strength: number;
+}
+
 export interface WeatherInfo {
   wind_speed: number;
   wind_direction: number;
   gusting: boolean;
+  /** Currently-active gust regions (hazardous — drones route around them). */
+  gust_regions?: GustRegionData[];
 }
 
 export interface DayCycleInfo {

@@ -530,17 +530,19 @@ async def simulation_loop() -> None:
                             )
                     drone_commands.append(cmd)
 
-            # Get AI agent commands
-            agent_commands = coordinator.update(world, sim_config)
+            # Update weather BEFORE agent + physics so coordinator, tick
+            # physics, and frontend broadcast all see the same wind state.
+            weather.update(world.elapsed)
+
+            # Get AI agent commands (uses is_hazardous_at to route around gusts)
+            agent_commands = coordinator.update(
+                world, sim_config, wind_hazard_fn=weather.is_hazardous_at,
+            )
 
             # Human commands apply LAST so they win within the tick —
             # _apply_command iterates in order and later writes overwrite
             # earlier ones. Documented contract: human overrides agent.
             commands = agent_commands + drone_commands
-
-            # Update weather BEFORE the tick so this tick's physics sees
-            # the same wind that gets broadcast alongside the state snapshot.
-            weather.update(world.elapsed)
 
             # Tick with chunked terrain (wind_fn queries live weather)
             world = tick_chunked(

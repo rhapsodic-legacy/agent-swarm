@@ -10,6 +10,7 @@ The coordinator runs every tick, producing Commands for each active drone.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum, auto
 
@@ -243,6 +244,9 @@ class SwarmCoordinator:
         # Track which asset IDs have already earned a find credit, so one
         # survivor doesn't get attributed repeatedly.
         self._credited_assets: set[str] = set()
+        # Dynamic environmental avoid filter (active wind gusts, etc.),
+        # refreshed every tick by the caller via update(wind_hazard_fn=...).
+        self._wind_hazard_fn: Callable[[float, float], bool] | None = None
 
     def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
         """Append an entry to the activity log ring buffer."""
@@ -399,6 +403,28 @@ class SwarmCoordinator:
                 continue
             target = agent.current_target
             if target is not None and inside_avoid(target.x, target.z):
+                agent.current_target = None
+                agent.local_sweep_waypoints = None
+                agent.ticks_at_target = 0
+
+    def _invalidate_targets_in_wind_gusts(
+        self, world: WorldState, wind_hazard_fn: Callable[[float, float], bool],
+    ) -> None:
+        """Drop any target that's inside an active gust this tick.
+
+        Wind hazards are dynamic — regions flip on/off as their gust cycle
+        peaks — so we re-check every tick rather than only on zone edits.
+        Kept as a separate method from the zone-change path so static
+        operator avoid logic stays unchanged.
+        """
+        for drone in world.drones:
+            if drone.status != DroneStatus.ACTIVE:
+                continue
+            agent = self.agents.get(drone.id)
+            if agent is None or agent.task == DroneTask.RETURNING_TO_BASE:
+                continue
+            target = agent.current_target
+            if target is not None and wind_hazard_fn(target.x, target.z):
                 agent.current_target = None
                 agent.local_sweep_waypoints = None
                 agent.ticks_at_target = 0
@@ -621,11 +647,29 @@ class SwarmCoordinator:
             for p in self.intel_pins.values()
         ]
 
-    def update(self, world: WorldState, config: SimConfig) -> list[Command]:
-        """Produce commands for all active drones based on current world state."""
+    def update(
+        self,
+        world: WorldState,
+        config: SimConfig,
+        *,
+        wind_hazard_fn: Callable[[float, float], bool] | None = None,
+    ) -> list[Command]:
+        """Produce commands for all active drones based on current world state.
+
+        `wind_hazard_fn(x, z) -> bool` — optional environmental avoid filter
+        (e.g. active wind gusts). Folded into the priority market's avoid
+        callback so gusting regions are skipped just like operator avoid
+        zones, and drones mid-flight through them are redirected.
+        """
         self.tick_count += 1
         commands: list[Command] = []
+        self._wind_hazard_fn = wind_hazard_fn
         self._expire_intel_pins(world)
+        # If wind hazards are provided, scrub targets that sit inside an
+        # active gust. Operator avoid zones are handled at command-time; wind
+        # regions shift every tick so we re-check on every tick.
+        if wind_hazard_fn is not None:
+            self._invalidate_targets_in_wind_gusts(world, wind_hazard_fn)
         # Adaptive learning: gently pull learned adjustments toward neutral
         # each tick so transient noise can't lock in a bad weight.
         self.adaptive.tick_decay()
@@ -1141,9 +1185,16 @@ class SwarmCoordinator:
             )
 
         avoid_zones = [z for z in self.zones.values() if z.priority == "avoid"]
+        wind_hazard_fn = self._wind_hazard_fn
 
         def is_in_avoid(x: float, z: float) -> bool:
-            return any(zone.contains(x, z) for zone in avoid_zones)
+            if any(zone.contains(x, z) for zone in avoid_zones):
+                return True
+            if wind_hazard_fn is not None and wind_hazard_fn(x, z):
+                return True
+            return False
+
+        has_avoid = bool(avoid_zones) or wind_hazard_fn is not None
 
         self._market_assignments = clear_market(
             drones=available,
@@ -1152,7 +1203,7 @@ class SwarmCoordinator:
             base_pos=world.base_position,
             config=self.config,
             weights=self.adaptive.effective_weights(),
-            is_in_avoid_zone=is_in_avoid if avoid_zones else None,
+            is_in_avoid_zone=is_in_avoid if has_avoid else None,
         )
 
     def _systematic_target(self, drone: Drone, agent: DroneAgent, world: WorldState) -> Vec3 | None:

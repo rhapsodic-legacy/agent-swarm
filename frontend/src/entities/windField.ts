@@ -10,7 +10,7 @@
 
 import * as THREE from "three";
 
-import type { WeatherInfo } from "@/network/types";
+import type { GustRegionData, WeatherInfo } from "@/network/types";
 
 const GRID_CELLS = 12;               // GRID_CELLS × GRID_CELLS arrows
 const ARROW_LENGTH = 80;             // meters; scaled with wind speed
@@ -21,12 +21,20 @@ const GUST_COLOR = new THREE.Color(0xff5533);
 const GUST_SPEED_MS = 8.0;           // above this we interpolate toward GUST_COLOR
 const BASE_OPACITY = 0.55;
 
+const GUST_REGION_COLOR = new THREE.Color(0xff3311);
+const GUST_REGION_FILL_OPACITY = 0.12;
+const GUST_REGION_RING_OPACITY = 0.40;
+const GUST_REGION_Y = 8;             // above terrain, below wind arrows
+
 export class WindFieldRenderer {
   private scene: THREE.Scene;
   private mesh: THREE.InstancedMesh | null = null;
   private material: THREE.MeshBasicMaterial | null = null;
   private worldSize = 0;
   private readonly instanceCount = GRID_CELLS * GRID_CELLS;
+
+  // Gust-region rings & fills are rebuilt each update from the broadcast list.
+  private gustMeshes: THREE.Mesh[] = [];
 
   // Scratch
   private readonly mat4 = new THREE.Matrix4();
@@ -129,9 +137,62 @@ export class WindFieldRenderer {
       this.material.color.copy(CALM_COLOR).lerp(GUST_COLOR, t);
       this.material.opacity = BASE_OPACITY + (weather.gusting ? 0.2 : 0.0);
     }
+
+    // Rebuild gust-region rings & fills from the current active list.
+    this.rebuildGustRegions(weather.gust_regions ?? []);
+  }
+
+  private rebuildGustRegions(regions: readonly GustRegionData[]): void {
+    // Dispose the previous frame's geometry/materials — these are cheap
+    // to rebuild and there are typically 0–3 active regions at once.
+    for (const m of this.gustMeshes) {
+      this.scene.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    this.gustMeshes = [];
+
+    for (const r of regions) {
+      // Fade alpha with strength so newly-activating regions read as weaker.
+      const strengthT = Math.max(0.4, Math.min(1.0, r.strength));
+
+      const fillGeo = new THREE.CircleGeometry(r.radius, 48);
+      const fillMat = new THREE.MeshBasicMaterial({
+        color: GUST_REGION_COLOR,
+        transparent: true,
+        opacity: GUST_REGION_FILL_OPACITY * strengthT,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const fill = new THREE.Mesh(fillGeo, fillMat);
+      fill.rotation.x = -Math.PI / 2;
+      fill.position.set(r.x, GUST_REGION_Y, r.z);
+      this.scene.add(fill);
+      this.gustMeshes.push(fill);
+
+      const ringGeo = new THREE.RingGeometry(r.radius - 2.0, r.radius, 64);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: GUST_REGION_COLOR,
+        transparent: true,
+        opacity: GUST_REGION_RING_OPACITY * strengthT,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(r.x, GUST_REGION_Y + 0.5, r.z);
+      this.scene.add(ring);
+      this.gustMeshes.push(ring);
+    }
   }
 
   dispose(): void {
+    for (const m of this.gustMeshes) {
+      this.scene.remove(m);
+      m.geometry.dispose();
+      (m.material as THREE.Material).dispose();
+    }
+    this.gustMeshes = [];
     if (this.mesh) {
       this.scene.remove(this.mesh);
       this.mesh.geometry.dispose();
