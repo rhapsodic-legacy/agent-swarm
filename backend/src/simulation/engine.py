@@ -124,9 +124,11 @@ def tick(
             new_drones.append(d)
         drones = new_drones
 
-    # --- 4b. Update mobile survivors (random walk) ---
+    # --- 4b. Update mobile survivors (wander + flee from nearby drones) ---
     if rng is not None:
-        updated_survivors = update_survivors(world.survivors, world.terrain, dt, rng)
+        updated_survivors = update_survivors(
+            world.survivors, world.terrain, dt, rng, drones=tuple(drones),
+        )
     else:
         updated_survivors = world.survivors
 
@@ -394,11 +396,13 @@ def tick_chunked(
         all_survivors.extend(chunk.survivors)
 
 
-    # Update mobile survivors
+    # Update mobile survivors (wander + flee from nearby drones)
     if rng is not None:
         survivors_tuple = tuple(all_survivors)
         # Use lightweight terrain stub for survivor updates
-        survivors_tuple = update_survivors(survivors_tuple, world.terrain, dt, rng)
+        survivors_tuple = update_survivors(
+            survivors_tuple, world.terrain, dt, rng, drones=tuple(drones),
+        )
     else:
         survivors_tuple = tuple(all_survivors)
 

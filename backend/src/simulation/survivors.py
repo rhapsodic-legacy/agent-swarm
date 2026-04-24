@@ -1,6 +1,10 @@
-"""Survivor movement logic — mobile survivors wander via random walk.
+"""Survivor movement logic — mobile survivors wander or flee from drones.
 
 Only mobile, undiscovered survivors move. Once a survivor is found they stay put.
+Baseline behaviour is a biome-aware random walk; when an active drone comes
+within `FLEE_RADIUS`, the survivor moves AWAY from the nearest drone at an
+elevated speed (models a disoriented victim reacting to rotor noise).
+
 Movement is clamped to terrain bounds and avoids WATER biome cells.
 """
 
@@ -11,7 +15,13 @@ from dataclasses import replace
 
 import numpy as np
 
-from src.simulation.types import Biome, Survivor, Terrain, Vec3
+from src.simulation.types import Biome, Drone, DroneStatus, Survivor, Terrain, Vec3
+
+# Survivor flees when any active drone enters this radius (meters).
+FLEE_RADIUS: float = 80.0
+# Speed multiplier applied when fleeing. ~2.5× means a 0.5 m/s wanderer
+# briefly sprints to ~1.25 m/s, enough to dodge a detection corridor.
+FLEE_SPEED_MULT: float = 2.5
 
 
 def update_survivors(
@@ -19,6 +29,8 @@ def update_survivors(
     terrain: Terrain,
     dt: float,
     rng: np.random.Generator,
+    *,
+    drones: tuple[Drone, ...] = (),
 ) -> tuple[Survivor, ...]:
     """Return a new tuple of survivors with mobile ones moved by random walk.
 
@@ -37,23 +49,50 @@ def update_survivors(
     heightmap: np.ndarray = terrain.heightmap  # type: ignore[assignment]
     biome_map: np.ndarray = terrain.biome_map  # type: ignore[assignment]
 
+    # Pre-filter to active drones — failed / recharging drones don't scare
+    # survivors. Index by position for cheap nearest lookup.
+    active_drone_positions: list[tuple[float, float]] = [
+        (d.position.x, d.position.z)
+        for d in drones
+        if d.status == DroneStatus.ACTIVE
+    ]
+
     for survivor in survivors:
         if not survivor.mobile or survivor.discovered:
             result.append(survivor)
             continue
 
-        # Probabilistic direction change (~every 3 seconds on average)
-        if rng.random() < dt / 3.0:
-            angle = rng.uniform(0.0, 2.0 * math.pi)
-        else:
-            # Keep moving in a random direction each tick for simplicity;
-            # the probability gate above controls *how often* direction changes
-            # matter, but we always attempt a small step.
-            angle = rng.uniform(0.0, 2.0 * math.pi)
+        # Check for fleeing: nearest active drone within FLEE_RADIUS?
+        flee_vec: tuple[float, float] | None = None
+        if active_drone_positions:
+            nearest_d_sq = FLEE_RADIUS * FLEE_RADIUS
+            nearest_dx = 0.0
+            nearest_dz = 0.0
+            for dx_drone, dz_drone in active_drone_positions:
+                rdx = survivor.position.x - dx_drone
+                rdz = survivor.position.z - dz_drone
+                d_sq = rdx * rdx + rdz * rdz
+                if d_sq < nearest_d_sq:
+                    nearest_d_sq = d_sq
+                    nearest_dx = rdx
+                    nearest_dz = rdz
+            if nearest_d_sq < FLEE_RADIUS * FLEE_RADIUS:
+                # Unit vector away from nearest drone
+                mag = math.sqrt(max(nearest_d_sq, 1e-9))
+                flee_vec = (nearest_dx / mag, nearest_dz / mag)
 
-        step = survivor.speed * dt
-        dx = math.cos(angle) * step
-        dz = math.sin(angle) * step
+        if flee_vec is not None:
+            step = survivor.speed * FLEE_SPEED_MULT * dt
+            dx = flee_vec[0] * step
+            dz = flee_vec[1] * step
+        else:
+            # Baseline random walk. Probability gate is historical; directions
+            # are re-sampled each tick so the gate is effectively always true,
+            # which is the intended "wander" feel.
+            angle = rng.uniform(0.0, 2.0 * math.pi)
+            step = survivor.speed * dt
+            dx = math.cos(angle) * step
+            dz = math.sin(angle) * step
 
         new_x = survivor.position.x + dx
         new_z = survivor.position.z + dz
