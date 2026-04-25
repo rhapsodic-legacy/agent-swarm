@@ -68,14 +68,120 @@ class TestMissionEvidence:
                 assert 0 <= e.position.x <= WORLD_SIZE
                 assert 0 <= e.position.z <= WORLD_SIZE
 
-    def test_maritime_has_no_evidence_trail(self) -> None:
-        """Phase 3 MVP only wires lost_hiker + aircraft_crash; other missions
-        should still construct cleanly with an empty evidence list."""
+    def test_maritime_plants_drift_trail(self) -> None:
+        """Maritime drift: debris along the LKP→COM line, directional slick
+        (footprint heading aligned with current), signal at the COM."""
+        from src.simulation.mission import maritime_sar
+
+        m = maritime_sar(WORLD_SIZE, seed=42)
+        kinds = [e.kind for e in m.evidence]
+        assert kinds.count(EvidenceKind.DEBRIS.value) == 3
+        assert kinds.count(EvidenceKind.FOOTPRINT.value) == 1
+        assert kinds.count(EvidenceKind.SIGNAL_FIRE.value) == 1
+
+        pins = {p["kind"]: p for p in m.intel_pins}
+        lkp_x, lkp_z = pins["lkp"]["position"]
+        com_x, com_z = pins["drift"]["position"]
+        drift_len = math.hypot(com_x - lkp_x, com_z - lkp_z)
+        assert drift_len > 1.0
+
+        # Project each debris onto the drift axis — values should progress
+        # monotonically from LKP toward the COM (0.2 → 0.5 → 0.8).
+        debris = [e for e in m.evidence if e.kind == EvidenceKind.DEBRIS.value]
+        axis_x = (com_x - lkp_x) / drift_len
+        axis_z = (com_z - lkp_z) / drift_len
+        proj = [(e.position.x - lkp_x) * axis_x + (e.position.z - lkp_z) * axis_z for e in debris]
+        assert proj == sorted(proj)  # ordered downstream
+
+        # Debris ages decrease downstream (old wreckage near LKP, fresh near COM).
+        ages = [e.age_hours for e in debris]
+        assert ages == sorted(ages, reverse=True)
+
+        # Signal fire should be near the COM (within ~200m after jitter + clamp).
+        sf = next(e for e in m.evidence if e.kind == EvidenceKind.SIGNAL_FIRE.value)
+        assert math.hypot(sf.position.x - com_x, sf.position.z - com_z) < 250.0
+
+    def test_avalanche_plants_runout_cone(self) -> None:
+        """Avalanche: fracture-line footprint heading down-slope, debris
+        fanning toward the toe, signal fire near the toe."""
+        from src.simulation.mission import avalanche
+
+        m = avalanche(WORLD_SIZE, seed=42)
+        kinds = [e.kind for e in m.evidence]
+        assert kinds.count(EvidenceKind.FOOTPRINT.value) == 1
+        assert kinds.count(EvidenceKind.DEBRIS.value) == 3
+        assert kinds.count(EvidenceKind.SIGNAL_FIRE.value) == 1
+
+        pins = {p["kind"]: p for p in m.intel_pins}
+        fracture_x, fracture_z = pins["fracture"]["position"]
+        toe_x, toe_z = pins["toe"]["position"]
+
+        # Fracture footprint sits at the fracture line and points down-slope
+        # (heading vector ≈ toe direction).
+        fp = next(e for e in m.evidence if e.kind == EvidenceKind.FOOTPRINT.value)
+        assert math.hypot(fp.position.x - fracture_x, fp.position.z - fracture_z) < 5.0
+        assert fp.heading is not None
+        # Dot product between heading unit vector and (toe - fracture) unit
+        # vector should be strongly positive (nearly collinear).
+        dx = toe_x - fracture_x
+        dz = toe_z - fracture_z
+        runout = math.hypot(dx, dz)
+        heading_x = math.sin(fp.heading)
+        heading_z = math.cos(fp.heading)
+        alignment = heading_x * (dx / runout) + heading_z * (dz / runout)
+        assert alignment > 0.95
+
+        # Signal fire is close to the toe (within ~200m of the apex/toe jitter).
+        sf = next(e for e in m.evidence if e.kind == EvidenceKind.SIGNAL_FIRE.value)
+        assert math.hypot(sf.position.x - toe_x, sf.position.z - toe_z) < 250.0
+
+        # Debris spread laterally grows with distance down-cone: project
+        # each debris onto the perpendicular axis and onto the down-slope
+        # axis, then verify the farthest-downstream debris has non-trivial
+        # lateral spread.
+        perp_x = -dz / runout
+        perp_z = dx / runout
+        debris = [e for e in m.evidence if e.kind == EvidenceKind.DEBRIS.value]
+        lateral_spreads = [
+            abs((e.position.x - fracture_x) * perp_x + (e.position.z - fracture_z) * perp_z)
+            for e in debris
+        ]
+        # At least one debris point should be meaningfully off-axis (>50m).
+        assert max(lateral_spreads) > 50.0
+
+    def test_disaster_plants_evidence_at_top_clusters(self) -> None:
+        """Disaster: signal fires on the two densest clusters, debris on the
+        next three. Each evidence sits inside its anchoring cluster radius."""
+        from src.simulation.mission import disaster_response
+
+        m = disaster_response(WORLD_SIZE, seed=42)
+        kinds = [e.kind for e in m.evidence]
+        assert kinds.count(EvidenceKind.SIGNAL_FIRE.value) == 2
+        assert kinds.count(EvidenceKind.DEBRIS.value) == 3
+
+        ranked = sorted(m.clusters, key=lambda c: c[3], reverse=True)
+        top_two = ranked[:2]
+        fires = [e for e in m.evidence if e.kind == EvidenceKind.SIGNAL_FIRE.value]
+        # Each signal fire should be within its cluster's jitter band (≤ ~120m
+        # from one of the top-two cluster centers, after 80m jitter + clamp).
+        for fire in fires:
+            best = min(
+                math.hypot(fire.position.x - cx, fire.position.z - cz) for cx, cz, _r, _w in top_two
+            )
+            assert best < 150.0
+
+    def test_new_trails_are_deterministic_for_same_seed(self) -> None:
         from src.simulation.mission import avalanche, disaster_response, maritime_sar
 
         for fn in (maritime_sar, avalanche, disaster_response):
-            m = fn(WORLD_SIZE, seed=42)
-            assert m.evidence == []
+            m1 = fn(WORLD_SIZE, seed=77)
+            m2 = fn(WORLD_SIZE, seed=77)
+            assert len(m1.evidence) == len(m2.evidence)
+            for e1, e2 in zip(m1.evidence, m2.evidence, strict=True):
+                assert e1.position == e2.position
+                assert e1.kind == e2.kind
+                assert e1.heading == e2.heading
+                assert e1.age_hours == e2.age_hours
 
     def test_evidence_deterministic_for_same_seed(self) -> None:
         m1 = lost_hiker(WORLD_SIZE, seed=123)
@@ -102,7 +208,9 @@ class TestPosteriorKernels:
         col, row = sm.world_to_cell(5000, 5000)
         before_center = float(sm.poc[row, col])
         peak = sm.update_on_evidence(
-            position=(5000, 5000), kind="signal_fire", confidence=0.9,
+            position=(5000, 5000),
+            kind="signal_fire",
+            confidence=0.9,
         )
         after_center = float(sm.poc[row, col])
         # Signal fire should meaningfully boost the center cell
@@ -125,7 +233,9 @@ class TestPosteriorKernels:
         # heading = π/2 (east) — sin(π/2)=1, cos(π/2)=0 → direction vector
         # (x, z) = (1, 0), i.e. pure +X.
         sm.update_on_evidence(
-            position=(5000, 5000), kind="footprint", confidence=0.9,
+            position=(5000, 5000),
+            kind="footprint",
+            confidence=0.9,
             heading=math.pi / 2,
         )
         # Sample a cell 400m east and 400m west of the footprint.
@@ -140,7 +250,9 @@ class TestPosteriorKernels:
         more than cells exactly at the debris point."""
         sm = self._make_uniform()
         sm.update_on_evidence(
-            position=(5000, 5000), kind="debris", confidence=0.9,
+            position=(5000, 5000),
+            kind="debris",
+            confidence=0.9,
         )
         # Center cell
         c_col, c_row = sm.world_to_cell(5000, 5000)
@@ -155,7 +267,9 @@ class TestPosteriorKernels:
         sm = self._make_uniform()
         before = sm.poc.copy()
         peak = sm.update_on_evidence(
-            position=(5000, 5000), kind="signal_fire", confidence=0.0,
+            position=(5000, 5000),
+            kind="signal_fire",
+            confidence=0.0,
         )
         np.testing.assert_array_equal(sm.poc, before)
         assert peak == 0.0
@@ -163,14 +277,18 @@ class TestPosteriorKernels:
     def test_evidence_outside_world_returns_zero(self) -> None:
         sm = self._make_uniform()
         peak = sm.update_on_evidence(
-            position=(-100.0, 5000.0), kind="signal_fire", confidence=0.9,
+            position=(-100.0, 5000.0),
+            kind="signal_fire",
+            confidence=0.9,
         )
         assert peak == 0.0
 
     def test_unknown_kind_falls_back_to_isotropic(self) -> None:
         sm = self._make_uniform()
         peak = sm.update_on_evidence(
-            position=(5000, 5000), kind="mystery_clue", confidence=0.5,
+            position=(5000, 5000),
+            kind="mystery_clue",
+            confidence=0.5,
         )
         # Should still apply *some* update
         assert peak > 1.0
@@ -199,7 +317,9 @@ class TestPosteriorKernels:
 
         before = mass_near(7500, 7500, 600.0)
         sm.update_on_evidence(
-            position=(7500, 7500), kind="signal_fire", confidence=0.95,
+            position=(7500, 7500),
+            kind="signal_fire",
+            confidence=0.95,
         )
         after = mass_near(7500, 7500, 600.0)
         # Signal fire should pull mass toward its location
@@ -231,20 +351,27 @@ class TestEvidenceDetection:
 
     def test_drone_finds_footprint_within_range(self) -> None:
         config = SimConfig(weather_visibility=1.0)
+
         # Beach biome (open terrain) — biome_fn always returns BEACH
         def beach_biome(_x: float, _z: float) -> int:
             return 1  # Biome.BEACH.value
+
         drone = self._drone_at(1000, 1000)
         ev = self._evidence_at(42, EvidenceKind.FOOTPRINT.value, 1010, 1010)
         detected = detect_evidence(
-            drone, (ev,), biome_fn=beach_biome, config=config,
+            drone,
+            (ev,),
+            biome_fn=beach_biome,
+            config=config,
         )
         assert detected == [42]
 
     def test_drone_misses_evidence_out_of_range(self) -> None:
         config = SimConfig()
+
         def beach_biome(_x: float, _z: float) -> int:
             return 1
+
         drone = self._drone_at(1000, 1000)
         # Footprint 500m away — outside base range (60m)
         ev = self._evidence_at(1, EvidenceKind.FOOTPRINT.value, 1500, 1500)
@@ -254,8 +381,10 @@ class TestEvidenceDetection:
     def test_signal_fire_detected_at_long_range(self) -> None:
         """Signal fires have a much larger base range than footprints."""
         config = SimConfig()
+
         def beach_biome(_x: float, _z: float) -> int:
             return 1
+
         drone = self._drone_at(1000, 1000)
         # Signal fire 300m away — outside footprint range but inside signal_fire range
         ev = self._evidence_at(1, EvidenceKind.SIGNAL_FIRE.value, 1300, 1000)
@@ -264,8 +393,10 @@ class TestEvidenceDetection:
 
     def test_already_discovered_evidence_skipped(self) -> None:
         config = SimConfig()
+
         def beach_biome(_x: float, _z: float) -> int:
             return 1
+
         drone = self._drone_at(1000, 1000)
         ev = Evidence(
             id=1,
@@ -278,8 +409,10 @@ class TestEvidenceDetection:
 
     def test_failed_drone_detects_nothing(self) -> None:
         config = SimConfig()
+
         def beach_biome(_x: float, _z: float) -> int:
             return 1
+
         drone = Drone(
             id=0,
             position=Vec3(1000, 50.0, 1000),
@@ -293,8 +426,10 @@ class TestEvidenceDetection:
     def test_forest_reduces_detection_range(self) -> None:
         """Forest biome significantly cuts footprint detection range."""
         config = SimConfig(weather_visibility=1.0)
+
         def forest_biome(_x: float, _z: float) -> int:
             return 2  # Biome.FOREST.value
+
         drone = self._drone_at(1000, 1000)
         # Footprint 35m away. Beach would detect (60m*1.0=60m > 35m), forest should
         # also detect since 60*0.45=27m. Let's put it at 20m.

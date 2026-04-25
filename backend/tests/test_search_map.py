@@ -6,13 +6,9 @@ wrong here, everything downstream is wrong.
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
-import pytest
 
 from src.simulation.search_map import SearchMap
-
 
 # ---------------------------------------------------------------------------
 # Construction
@@ -129,7 +125,9 @@ class TestBayesianUpdate:
         col, row = sm.world_to_cell(5000, 5000)
         before = float(sm.poc[row, col])
         sm.update_after_failed_scan(
-            center_world=(5000, 5000), radius_meters=100, pod=0.5,
+            center_world=(5000, 5000),
+            radius_meters=100,
+            pod=0.5,
         )
         after = float(sm.poc[row, col])
         assert after < before
@@ -140,7 +138,9 @@ class TestBayesianUpdate:
         far_col, far_row = sm.world_to_cell(1000, 1000)
         before = float(sm.poc[far_row, far_col])
         sm.update_after_failed_scan(
-            center_world=(5000, 5000), radius_meters=100, pod=0.5,
+            center_world=(5000, 5000),
+            radius_meters=100,
+            pod=0.5,
         )
         after = float(sm.poc[far_row, far_col])
         assert after == before
@@ -149,7 +149,9 @@ class TestBayesianUpdate:
         sm = SearchMap.uniform(world_size=10240.0, cell_size=40.0)
         before = sm.poc.copy()
         sm.update_after_failed_scan(
-            center_world=(5000, 5000), radius_meters=100, pod=0.0,
+            center_world=(5000, 5000),
+            radius_meters=100,
+            pod=0.0,
         )
         np.testing.assert_array_equal(sm.poc, before)
 
@@ -161,7 +163,9 @@ class TestBayesianUpdate:
         sm.poc[row, col] = 0.5  # 50% prior the target is here
         pod = 0.8
         sm.update_after_failed_scan(
-            center_world=(5000, 5000), radius_meters=20, pod=pod,
+            center_world=(5000, 5000),
+            radius_meters=20,
+            pod=pod,
         )
         expected = 0.5 * (1 - pod) / (1 - 0.5 * pod)  # = 0.1 / 0.6 = 0.1667
         actual = float(sm.poc[row, col])
@@ -174,7 +178,9 @@ class TestBayesianUpdate:
         sm.poc[row, col] = 0.9
         for _ in range(20):
             sm.update_after_failed_scan(
-                center_world=(5000, 5000), radius_meters=20, pod=0.5,
+                center_world=(5000, 5000),
+                radius_meters=20,
+                pod=0.5,
             )
         assert float(sm.poc[row, col]) < 0.01
 

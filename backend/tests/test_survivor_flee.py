@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from src.simulation.survivors import FLEE_RADIUS, FLEE_SPEED_MULT, update_survivors
+from src.simulation.survivors import FLEE_RADIUS, update_survivors
 from src.simulation.types import Biome, Drone, DroneStatus, Survivor, Terrain, Vec3
 
 
@@ -12,8 +12,12 @@ def _flat_terrain(size: int = 256) -> Terrain:
     heightmap = np.full((size, size), 10.0, dtype=np.float64)
     biome_map = np.full((size, size), Biome.BEACH.value, dtype=np.int32)
     return Terrain(
-        width=size, height=size, max_elevation=200.0,
-        heightmap=heightmap, biome_map=biome_map, seed=42,
+        width=size,
+        height=size,
+        max_elevation=200.0,
+        heightmap=heightmap,
+        biome_map=biome_map,
+        seed=42,
     )
 
 
@@ -34,7 +38,11 @@ def test_survivor_flees_from_nearby_active_drone():
     rng = np.random.default_rng(42)
 
     updated = update_survivors(
-        (surv,), terrain, dt=0.1, rng=rng, drones=(drone,),
+        (surv,),
+        terrain,
+        dt=0.1,
+        rng=rng,
+        drones=(drone,),
     )
     assert updated[0].position.x < surv.position.x, (
         f"Survivor should flee west; went from x={surv.position.x} to {updated[0].position.x}"
@@ -49,7 +57,11 @@ def test_survivor_ignores_failed_drones():
     rng = np.random.default_rng(42)
 
     updated = update_survivors(
-        (surv,), terrain, dt=0.1, rng=rng, drones=(failed,),
+        (surv,),
+        terrain,
+        dt=0.1,
+        rng=rng,
+        drones=(failed,),
     )
     # Speed=0 and no active drones → position unchanged
     assert abs(updated[0].position.x - surv.position.x) < 1e-9
@@ -65,7 +77,11 @@ def test_survivor_does_not_flee_from_distant_drone():
     rng = np.random.default_rng(42)
 
     updated = update_survivors(
-        (surv,), terrain, dt=0.1, rng=rng, drones=(distant,),
+        (surv,),
+        terrain,
+        dt=0.1,
+        rng=rng,
+        drones=(distant,),
     )
     # With speed=0 survivor doesn't move at all regardless (wander × speed = 0)
     assert abs(updated[0].position.x - surv.position.x) < 1e-9
@@ -89,8 +105,7 @@ def test_fleeing_is_faster_than_wandering():
     rng_b = np.random.default_rng(42)
     fled = update_survivors((surv,), terrain, dt=1.0, rng=rng_b, drones=(drone,))
     flee_dist = (
-        (fled[0].position.x - surv.position.x) ** 2
-        + (fled[0].position.z - surv.position.z) ** 2
+        (fled[0].position.x - surv.position.x) ** 2 + (fled[0].position.z - surv.position.z) ** 2
     ) ** 0.5
 
     # Flee distance should be approximately FLEE_SPEED_MULT × wander distance,
@@ -104,8 +119,11 @@ def test_discovered_survivors_do_not_flee():
     """Once found, survivors stop moving entirely."""
     terrain = _flat_terrain()
     surv = Survivor(
-        id=0, position=Vec3(128.0, 10.0, 128.0),
-        mobile=True, speed=0.5, discovered=True,
+        id=0,
+        position=Vec3(128.0, 10.0, 128.0),
+        mobile=True,
+        speed=0.5,
+        discovered=True,
     )
     drone = _drone(0, 138.0, 128.0)
     rng = np.random.default_rng(42)

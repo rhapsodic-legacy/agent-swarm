@@ -124,17 +124,15 @@ class MetricsTracker:
         survivors_found = sum(1 for s in world.survivors if s.discovered)
         self._latest_survivors_found = survivors_found
         self._total_survivors_seen = max(
-            self._total_survivors_seen, len(world.survivors),
+            self._total_survivors_seen,
+            len(world.survivors),
         )
 
-        active_drones = sum(
-            1 for d in world.drones if d.status == DroneStatus.ACTIVE
-        )
+        active_drones = sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE)
         self._latest_active_drones = active_drones
 
         avg_battery = (
-            sum(d.battery for d in world.drones) / len(world.drones)
-            if world.drones else 0.0
+            sum(d.battery for d in world.drones) / len(world.drones) if world.drones else 0.0
         )
         self._latest_avg_battery = avg_battery
 
@@ -157,23 +155,15 @@ class MetricsTracker:
         if self._time_to_first_discovery is None and survivors_found > 0:
             self._time_to_first_discovery = elapsed
 
-        if (
-            self._time_to_full_coverage is None
-            and coverage_pct >= _FULL_COVERAGE_THRESHOLD
-        ):
+        if self._time_to_full_coverage is None and coverage_pct >= _FULL_COVERAGE_THRESHOLD:
             self._time_to_full_coverage = elapsed
 
         # First survivor found strictly after first evidence → the "evidence
         # helped" signal. Captured once, never overwritten.
-        if (
-            self._evidence_to_survivor_latency is None
-            and self._time_to_first_evidence is not None
-        ):
+        if self._evidence_to_survivor_latency is None and self._time_to_first_evidence is not None:
             for t in self._survivor_discovery_times.values():
                 if t > self._time_to_first_evidence:
-                    self._evidence_to_survivor_latency = (
-                        t - self._time_to_first_evidence
-                    )
+                    self._evidence_to_survivor_latency = t - self._time_to_first_evidence
                     break
 
         # --- Event tallies ---
@@ -220,8 +210,7 @@ class MetricsTracker:
         # report "entropy dropped by X%" in the scorecard.
         if (
             world.search_map is not None
-            and elapsed - self._last_entropy_sample_elapsed
-            >= _ENTROPY_SAMPLE_INTERVAL
+            and elapsed - self._last_entropy_sample_elapsed >= _ENTROPY_SAMPLE_INTERVAL
         ):
             self._last_entropy_sample_elapsed = elapsed
             ent = _shannon_entropy(world.search_map.poc)
@@ -282,14 +271,13 @@ class MetricsTracker:
         mission_name = getattr(self._mission, "name", None)
         mission_seed = getattr(self._mission, "seed", None)
         survival_window = getattr(self._mission, "survival_window_seconds", None)
-        planted_evidence_count = (
-            len(self._mission.evidence) if self._mission is not None else 0
-        )
+        planted_evidence_count = len(self._mission.evidence) if self._mission is not None else 0
 
         discovery_times_sorted = sorted(self._survivor_discovery_times.values())
         mttd = (
             sum(discovery_times_sorted) / len(discovery_times_sorted)
-            if discovery_times_sorted else None
+            if discovery_times_sorted
+            else None
         )
         time_to_last = discovery_times_sorted[-1] if discovery_times_sorted else None
 
@@ -299,9 +287,14 @@ class MetricsTracker:
             in_window = sum(1 for t in discovery_times_sorted if t <= survival_window)
             found_in_window = in_window
             total = self._total_survivors_seen or len(discovery_times_sorted)
-            survival_window_pct = round(
-                (in_window / total) * 100.0, 1,
-            ) if total > 0 else None
+            survival_window_pct = (
+                round(
+                    (in_window / total) * 100.0,
+                    1,
+                )
+                if total > 0
+                else None
+            )
 
         total_drone_ticks = (
             self._drone_ticks_active
@@ -310,8 +303,7 @@ class MetricsTracker:
             + self._drone_ticks_failed
         )
         active_fraction = (
-            self._drone_ticks_active / total_drone_ticks
-            if total_drone_ticks > 0 else None
+            self._drone_ticks_active / total_drone_ticks if total_drone_ticks > 0 else None
         )
 
         battery_per_find = None
@@ -320,15 +312,20 @@ class MetricsTracker:
             # a drone's typical battery-per-km. Simpler: km / finds is the
             # most useful comparison statistic, keep it honest.
             battery_per_find = round(
-                self._total_drone_distance_m / self._latest_survivors_found, 1,
+                self._total_drone_distance_m / self._latest_survivors_found,
+                1,
             )
 
         entropy_drop_pct = None
-        if self._initial_entropy is not None and self._latest_entropy is not None:
-            if self._initial_entropy > 1e-9:
-                entropy_drop_pct = round(
-                    (1.0 - self._latest_entropy / self._initial_entropy) * 100.0, 1,
-                )
+        if (
+            self._initial_entropy is not None
+            and self._latest_entropy is not None
+            and self._initial_entropy > 1e-9
+        ):
+            entropy_drop_pct = round(
+                (1.0 - self._latest_entropy / self._initial_entropy) * 100.0,
+                1,
+            )
 
         return {
             "mission": mission_name,
@@ -342,35 +339,32 @@ class MetricsTracker:
                 "mttd_seconds": round(mttd, 2) if mttd is not None else None,
                 "time_to_first": (
                     round(self._time_to_first_discovery, 2)
-                    if self._time_to_first_discovery is not None else None
+                    if self._time_to_first_discovery is not None
+                    else None
                 ),
-                "time_to_last": (
-                    round(time_to_last, 2) if time_to_last is not None else None
-                ),
-                "discovery_timeline": [
-                    round(t, 2) for t in discovery_times_sorted
-                ],
+                "time_to_last": (round(time_to_last, 2) if time_to_last is not None else None),
+                "discovery_timeline": [round(t, 2) for t in discovery_times_sorted],
             },
             "evidence": {
                 "discovered": len(self._evidence_discovery_times),
                 "planted": planted_evidence_count,
                 "time_to_first": (
                     round(self._time_to_first_evidence, 2)
-                    if self._time_to_first_evidence is not None else None
+                    if self._time_to_first_evidence is not None
+                    else None
                 ),
                 "evidence_to_survivor_latency": (
                     round(self._evidence_to_survivor_latency, 2)
-                    if self._evidence_to_survivor_latency is not None else None
+                    if self._evidence_to_survivor_latency is not None
+                    else None
                 ),
             },
             "search_quality": {
                 "initial_entropy": (
-                    round(self._initial_entropy, 4)
-                    if self._initial_entropy is not None else None
+                    round(self._initial_entropy, 4) if self._initial_entropy is not None else None
                 ),
                 "final_entropy": (
-                    round(self._latest_entropy, 4)
-                    if self._latest_entropy is not None else None
+                    round(self._latest_entropy, 4) if self._latest_entropy is not None else None
                 ),
                 "entropy_drop_pct": entropy_drop_pct,
                 "coverage_pct": round(self._latest_coverage, 1),
@@ -379,8 +373,7 @@ class MetricsTracker:
                 "total_drone_km": round(self._total_drone_distance_m / 1000.0, 3),
                 "meters_per_find": battery_per_find,
                 "active_fraction": (
-                    round(active_fraction, 3)
-                    if active_fraction is not None else None
+                    round(active_fraction, 3) if active_fraction is not None else None
                 ),
                 "drone_ticks_active": self._drone_ticks_active,
                 "drone_ticks_returning": self._drone_ticks_returning,
@@ -403,8 +396,7 @@ class MetricsTracker:
             "active_drones": self._latest_active_drones,
             "avg_battery": round(self._latest_avg_battery, 1),
             "entropy": (
-                round(self._latest_entropy, 4)
-                if self._latest_entropy is not None else None
+                round(self._latest_entropy, 4) if self._latest_entropy is not None else None
             ),
         }
 
@@ -421,16 +413,14 @@ class MetricsTracker:
     def _search_quality_summary(self) -> dict:
         """Tight "is this a good run?" snapshot for the HUD."""
         discovery_times = sorted(self._survivor_discovery_times.values())
-        mttd = (
-            sum(discovery_times) / len(discovery_times)
-            if discovery_times else None
-        )
+        mttd = sum(discovery_times) / len(discovery_times) if discovery_times else None
         survival_window = getattr(self._mission, "survival_window_seconds", None)
         survival_window_pct = None
         if survival_window is not None and self._total_survivors_seen > 0:
             in_window = sum(1 for t in discovery_times if t <= survival_window)
             survival_window_pct = round(
-                (in_window / self._total_survivors_seen) * 100.0, 1,
+                (in_window / self._total_survivors_seen) * 100.0,
+                1,
             )
 
         entropy_drop_pct = None
@@ -440,7 +430,8 @@ class MetricsTracker:
             and self._initial_entropy > 1e-9
         ):
             entropy_drop_pct = round(
-                (1.0 - self._latest_entropy / self._initial_entropy) * 100.0, 1,
+                (1.0 - self._latest_entropy / self._initial_entropy) * 100.0,
+                1,
             )
 
         return {
@@ -450,9 +441,7 @@ class MetricsTracker:
         }
 
     def _evidence_progress_summary(self) -> dict:
-        planted = (
-            len(self._mission.evidence) if self._mission is not None else 0
-        )
+        planted = len(self._mission.evidence) if self._mission is not None else 0
         return {
             "discovered": len(self._evidence_discovery_times),
             "planted": planted,
@@ -465,9 +454,7 @@ class MetricsTracker:
             + self._drone_ticks_recharging
             + self._drone_ticks_failed
         )
-        active_fraction = (
-            round(self._drone_ticks_active / total, 3) if total > 0 else None
-        )
+        active_fraction = round(self._drone_ticks_active / total, 3) if total > 0 else None
         return {
             "total_drone_km": round(self._total_drone_distance_m / 1000.0, 3),
             "active_fraction": active_fraction,

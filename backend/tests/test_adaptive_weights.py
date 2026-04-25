@@ -16,7 +16,6 @@ from src.agents.adaptive_weights import (
 )
 from src.agents.priority_market import PriorityWeights
 
-
 # --- Test fixtures (mimic PriorityZone / IntelPin shapes) --------------------
 
 
@@ -65,7 +64,10 @@ def test_trust_only_scales_operator_sources() -> None:
     base = PriorityWeights()
     # Operator sources doubled
     assert eff.source_value_scale["intel_pin"] == base.source_value_scale["intel_pin"] * 2.0
-    assert eff.source_value_scale["operator_high_zone"] == base.source_value_scale["operator_high_zone"] * 2.0
+    assert (
+        eff.source_value_scale["operator_high_zone"]
+        == base.source_value_scale["operator_high_zone"] * 2.0
+    )
     # PoC + survivor_find unaffected (system-truth sources)
     assert eff.source_value_scale["poc_field"] == base.source_value_scale["poc_field"]
     assert eff.source_value_scale["survivor_find"] == base.source_value_scale["survivor_find"]
@@ -78,7 +80,10 @@ def test_find_inside_high_zone_credits_operator_high_zone() -> None:
     a = AdaptiveWeights()
     zone = _FakeZone("z1", "high", 0, 0, 100, 100)
     credited = a.record_survivor_find(
-        tick=10, survivor_xz=(50.0, 50.0), active_zones=[zone], active_pins=[],
+        tick=10,
+        survivor_xz=(50.0, 50.0),
+        active_zones=[zone],
+        active_pins=[],
     )
     assert credited == [("operator_high_zone", "zone_z1")]
     # Scale nudged up
@@ -90,7 +95,10 @@ def test_find_outside_zone_credits_nothing() -> None:
     a = AdaptiveWeights()
     zone = _FakeZone("z1", "high", 0, 0, 100, 100)
     credited = a.record_survivor_find(
-        tick=10, survivor_xz=(500.0, 500.0), active_zones=[zone], active_pins=[],
+        tick=10,
+        survivor_xz=(500.0, 500.0),
+        active_zones=[zone],
+        active_pins=[],
     )
     assert credited == []
     assert a.learned_source_scale == {}
@@ -100,7 +108,10 @@ def test_find_inside_avoid_zone_does_not_credit() -> None:
     a = AdaptiveWeights()
     zone = _FakeZone("z_avoid", "avoid", 0, 0, 100, 100)
     credited = a.record_survivor_find(
-        tick=10, survivor_xz=(50.0, 50.0), active_zones=[zone], active_pins=[],
+        tick=10,
+        survivor_xz=(50.0, 50.0),
+        active_zones=[zone],
+        active_pins=[],
     )
     assert credited == []
 
@@ -109,8 +120,10 @@ def test_find_inside_intel_pin_radius_credits_pin() -> None:
     a = AdaptiveWeights()
     pin = _FakePin(pin_id="p1", x=100.0, z=100.0, radius=50.0)
     credited = a.record_survivor_find(
-        tick=10, survivor_xz=(120.0, 120.0),  # ~28m from pin, well inside 50m
-        active_zones=[], active_pins=[pin],
+        tick=10,
+        survivor_xz=(120.0, 120.0),  # ~28m from pin, well inside 50m
+        active_zones=[],
+        active_pins=[pin],
     )
     assert credited == [("intel_pin", "intel_p1")]
 
@@ -119,8 +132,10 @@ def test_find_outside_intel_pin_radius_does_not_credit() -> None:
     a = AdaptiveWeights()
     pin = _FakePin(pin_id="p1", x=100.0, z=100.0, radius=20.0)
     credited = a.record_survivor_find(
-        tick=10, survivor_xz=(200.0, 200.0),  # ~141m from pin, well outside
-        active_zones=[], active_pins=[pin],
+        tick=10,
+        survivor_xz=(200.0, 200.0),  # ~141m from pin, well outside
+        active_zones=[],
+        active_pins=[pin],
     )
     assert credited == []
 
@@ -150,7 +165,8 @@ def test_bounds_cap_at_adapt_max_and_adapt_min() -> None:
     a = AdaptiveWeights()
     for _ in range(100):
         a.record_survivor_find(
-            tick=1, survivor_xz=(50, 50),
+            tick=1,
+            survivor_xz=(50, 50),
             active_zones=[_FakeZone("z1", "high", 0, 0, 100, 100)],
             active_pins=[],
         )
@@ -177,7 +193,9 @@ def test_effective_weights_combines_trust_and_learning() -> None:
     # Learn intel_pin is great
     for _ in range(10):
         a.record_survivor_find(
-            tick=1, survivor_xz=(50, 50), active_zones=[],
+            tick=1,
+            survivor_xz=(50, 50),
+            active_zones=[],
             active_pins=[_FakePin("p", 50, 50, 100)],
         )
     # Then bump trust further
@@ -185,11 +203,7 @@ def test_effective_weights_combines_trust_and_learning() -> None:
     eff = a.effective_weights()
     base = PriorityWeights()
     # Effective = base × learned × trust
-    expected = (
-        base.source_value_scale["intel_pin"]
-        * a.learned_source_scale["intel_pin"]
-        * 1.5
-    )
+    expected = base.source_value_scale["intel_pin"] * a.learned_source_scale["intel_pin"] * 1.5
     assert abs(eff.source_value_scale["intel_pin"] - expected) < 1e-6
 
 

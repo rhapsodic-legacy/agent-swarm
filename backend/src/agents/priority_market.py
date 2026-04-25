@@ -23,8 +23,8 @@ Design invariants the bid function enforces:
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Callable
 
 from src.simulation.types import Drone, DroneStatus, SimConfig, Vec3
 
@@ -36,9 +36,9 @@ class PriorityAsset:
     asset_id: str
     x: float
     z: float
-    radius: float        # effective area of influence (meters)
-    value: float         # pre-scaled importance (caller applies source multiplier)
-    source: str          # "poc_field" | "operator_high_zone" | "intel_pin" | ...
+    radius: float  # effective area of influence (meters)
+    value: float  # pre-scaled importance (caller applies source multiplier)
+    source: str  # "poc_field" | "operator_high_zone" | "intel_pin" | ...
     expires_tick: int | None = None
 
 
@@ -74,8 +74,8 @@ class PriorityWeights:
         }
     )
 
-    distance_penalty: float = 1.0          # coef on dist_to_asset in dist_factor
-    base_return_penalty: float = 0.5       # coef on dist_to_base in dist_factor
+    distance_penalty: float = 1.0  # coef on dist_to_asset in dist_factor
+    base_return_penalty: float = 0.5  # coef on dist_to_base in dist_factor
     battery_safety_margin_pct: float = 10.0  # reserve battery % below which bids go 0
     # Drain multiplier to account for real per-tick drain vs nominal cruise rate
     # (movement + altitude + sensor combine to ~3.6× nominal). 4× keeps a small
@@ -88,7 +88,7 @@ class PriorityWeights:
     # peak values (~5e-4); a poc_field cell thus stays at capacity 1 while an
     # operator_high_zone cell (5× boost) absorbs ~5 drones.
     saturation_value_per_slot: float = 5e-4
-    max_assignees_per_asset: int = 6         # hard cap per asset
+    max_assignees_per_asset: int = 6  # hard cap per asset
 
 
 def bid(
@@ -130,9 +130,7 @@ def bid(
     effective_value = asset.value * source_scale
 
     dist_factor = (
-        1.0
-        + weights.distance_penalty * dist_to_asset
-        + weights.base_return_penalty * dist_to_base
+        1.0 + weights.distance_penalty * dist_to_asset + weights.base_return_penalty * dist_to_base
     )
     switch_cost = weights.switching_costs.get(drone_task_name, 0.0)
     return effective_value / (dist_factor * (1.0 + switch_cost))

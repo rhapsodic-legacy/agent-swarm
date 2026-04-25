@@ -17,15 +17,14 @@ from src.simulation.mission import (
     MISSION_FACTORIES,
     SearchMission,
     aircraft_crash,
-    avalanche,
     available_missions,
+    avalanche,
     build_mission,
     disaster_response,
     lost_hiker,
     maritime_sar,
 )
 from src.simulation.search_map import SearchMap
-
 
 WORLD_SIZE = 10240
 
@@ -204,12 +203,8 @@ def test_maritime_base_is_offset_from_lkp_by_drift() -> None:
     drift_dist = math.hypot(drift[0] - lkp[0], drift[1] - lkp[1])
     assert drift_dist > 100.0
     # Base should be at the drift centroid, not at the LKP
-    base_to_drift = math.hypot(
-        m.base_position.x - drift[0], m.base_position.z - drift[1]
-    )
-    base_to_lkp = math.hypot(
-        m.base_position.x - lkp[0], m.base_position.z - lkp[1]
-    )
+    base_to_drift = math.hypot(m.base_position.x - drift[0], m.base_position.z - drift[1])
+    base_to_lkp = math.hypot(m.base_position.x - lkp[0], m.base_position.z - lkp[1])
     assert base_to_drift < base_to_lkp
 
 
@@ -219,12 +214,8 @@ def test_avalanche_base_at_fan_apex() -> None:
     pins = {p["kind"]: p for p in m.intel_pins}
     fracture = pins["fracture"]["position"]
     toe = pins["toe"]["position"]
-    base_to_fracture = math.hypot(
-        m.base_position.x - fracture[0], m.base_position.z - fracture[1]
-    )
-    base_to_toe = math.hypot(
-        m.base_position.x - toe[0], m.base_position.z - toe[1]
-    )
+    base_to_fracture = math.hypot(m.base_position.x - fracture[0], m.base_position.z - fracture[1])
+    base_to_toe = math.hypot(m.base_position.x - toe[0], m.base_position.z - toe[1])
     # Base is closer to fracture than to toe (apex of fan, just below fracture)
     assert base_to_fracture < base_to_toe
 
@@ -234,9 +225,7 @@ def test_disaster_base_at_affected_centroid() -> None:
     m = disaster_response(WORLD_SIZE, seed=42)
     pins = {p["kind"]: p for p in m.intel_pins}
     centroid = pins["centroid"]["position"]
-    dist = math.hypot(
-        m.base_position.x - centroid[0], m.base_position.z - centroid[1]
-    )
+    dist = math.hypot(m.base_position.x - centroid[0], m.base_position.z - centroid[1])
     # Within margin clamp of the centroid
     assert dist < 50.0
 
@@ -268,6 +257,7 @@ def test_lost_hiker_base_is_forward_of_trailhead() -> None:
 def test_to_briefing_dict_is_json_safe(mission_name: str) -> None:
     """The briefing dict must round-trip through JSON for WebSocket serialization."""
     import json
+
     m = build_mission(mission_name, WORLD_SIZE, seed=42)
     d = m.to_briefing_dict()
     encoded = json.dumps(d)
@@ -275,6 +265,8 @@ def test_to_briefing_dict_is_json_safe(mission_name: str) -> None:
     assert decoded["name"] == m.name
     assert decoded["title"] == m.title
     assert decoded["base_position"] == [
-        m.base_position.x, m.base_position.y, m.base_position.z,
+        m.base_position.x,
+        m.base_position.y,
+        m.base_position.z,
     ]
     assert isinstance(decoded["intel_pins"], list)

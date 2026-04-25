@@ -199,7 +199,8 @@ class Terrain:
 class Command:
     """A command issued by a human or agent."""
 
-    type: str  # "move_to", "search_area", "return_to_base", "hold_position", "override", "set_priority"
+    # "move_to", "search_area", "return_to_base", "hold_position", "override", "set_priority"
+    type: str
     drone_id: int | None = None
     target: Vec3 | None = None
     zone_id: str | None = None
@@ -266,7 +267,9 @@ class SimConfig:
     urban_occlusion: float = 0.5  # 0-1, how much buildings block detection
     weather_visibility: float = 1.0  # 0-1, 1.0=clear, 0.3=heavy fog/rain
     night_penalty: float = 0.4  # detection multiplier at night (0-1)
-    transponder_range: float = 200.0  # range at which transponder-equipped survivors are always detected
+    transponder_range: float = (
+        200.0  # range at which transponder-equipped survivors are always detected
+    )
     transponder_ratio: float = 0.0  # fraction of survivors with transponders (0 = none)
     # Wind — drag force and battery penalty.
     # Drag: 0.0 = no effect; 0.5 = stationary drone drifts at half wind speed after 1s.

@@ -12,11 +12,11 @@ from src.agents.coordinator import (
     SearchPhase,
     SwarmCoordinator,
 )
-from src.simulation.types import Command
 from src.simulation.engine import create_world, tick
 from src.simulation.types import (
     FOG_EXPLORED,
     FOG_UNEXPLORED,
+    Command,
     DroneStatus,
     SimConfig,
 )
@@ -214,7 +214,10 @@ def _zone_command(
     if priority is not None:
         data["priority"] = priority
     return Command(
-        type="set_priority", zone_id=zone_id, priority=priority, data=data,
+        type="set_priority",
+        zone_id=zone_id,
+        priority=priority,
+        data=data,
     )
 
 
@@ -224,14 +227,16 @@ def test_zone_create_update_delete():
 
     poly = [[100.0, 100.0], [200.0, 100.0], [200.0, 200.0], [100.0, 200.0]]
     coord.apply_zone_command(
-        _zone_command("create", "z1", poly, "high"), world,
+        _zone_command("create", "z1", poly, "high"),
+        world,
     )
     assert "z1" in coord.zones
     assert coord.zones["z1"].priority == "high"
 
     # Update priority without polygon
     coord.apply_zone_command(
-        _zone_command("update", "z1", priority="low"), world,
+        _zone_command("update", "z1", priority="low"),
+        world,
     )
     assert coord.zones["z1"].priority == "low"
 
@@ -243,16 +248,22 @@ def test_zone_create_update_delete():
 def test_zone_multiplier_bias():
     coord = SwarmCoordinator(_CFG)
     coord.zones["high"] = PriorityZone(
-        "high", ((0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)),
-        "high", 0,
+        "high",
+        ((0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)),
+        "high",
+        0,
     )
     coord.zones["avoid"] = PriorityZone(
-        "avoid", ((500.0, 500.0), (600.0, 500.0), (600.0, 600.0), (500.0, 600.0)),
-        "avoid", 0,
+        "avoid",
+        ((500.0, 500.0), (600.0, 500.0), (600.0, 600.0), (500.0, 600.0)),
+        "avoid",
+        0,
     )
     coord.zones["low"] = PriorityZone(
-        "low", ((1000.0, 0.0), (1100.0, 0.0), (1100.0, 100.0), (1000.0, 100.0)),
-        "low", 0,
+        "low",
+        ((1000.0, 0.0), (1100.0, 0.0), (1100.0, 100.0), (1000.0, 100.0)),
+        "low",
+        0,
     )
 
     # Inside high zone → 3.0
@@ -281,7 +292,8 @@ def test_zone_invalid_priority_ignored():
     world = create_world(_CFG)
     poly = [[0.0, 0.0], [50.0, 0.0], [50.0, 50.0], [0.0, 50.0]]
     coord.apply_zone_command(
-        _zone_command("create", "bad", poly, "bogus"), world,
+        _zone_command("create", "bad", poly, "bogus"),
+        world,
     )
     assert "bad" not in coord.zones
 

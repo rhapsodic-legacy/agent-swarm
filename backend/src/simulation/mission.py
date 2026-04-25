@@ -89,7 +89,7 @@ class SearchMission:
         — Phase 3 will replace this with prior-only sources (last-known
         position, drift integration) that don't see the cluster centers.
         """
-        for (cx, cz, cr, cw) in self.clusters:
+        for cx, cz, cr, cw in self.clusters:
             grid.add_gaussian(
                 center_world=(cx, cz),
                 radius_meters=max(cr, 200.0),
@@ -117,7 +117,9 @@ class SearchMission:
 # ---------------------------------------------------------------------------
 
 
-def _clamp_to_world(x: float, z: float, world_size: int, margin: float = 50.0) -> tuple[float, float]:
+def _clamp_to_world(
+    x: float, z: float, world_size: int, margin: float = 50.0
+) -> tuple[float, float]:
     lo = margin
     hi = world_size - margin
     return max(lo, min(hi, x)), max(lo, min(hi, z))
@@ -265,6 +267,244 @@ def _plant_trail_evidence(
                 age_hours=0.25,
             )
         )
+
+    return evidence
+
+
+def _plant_drift_evidence(
+    lkp_x: float,
+    lkp_z: float,
+    com_x: float,
+    com_z: float,
+    leeway_uncertainty: float,
+    world_size: int,
+    rng: np.random.Generator,
+) -> list[Evidence]:
+    """Maritime drift trail — debris carried downstream from LKP toward drift COM.
+
+    Geometry follows surface current + leeway: wreckage/life-jacket debris
+    strewn along the drift line, weathered near the LKP (oldest) and fresher
+    near the leading edge. A directional "slick" marker (repurposed footprint
+    kind with heading=current bearing) sits mid-drift. A signal flare/dye
+    marker at the projected COM represents the survivor's current position.
+
+    Perpendicular jitter is bounded by the leeway uncertainty — the same
+    parameter that sets the search ellipse width.
+    """
+    evidence: list[Evidence] = []
+    dx = com_x - lkp_x
+    dz = com_z - lkp_z
+    drift_len = math.hypot(dx, dz)
+    if drift_len < 1.0:
+        return evidence
+
+    perp_x = -dz / drift_len
+    perp_z = dx / drift_len
+    drift_heading = math.atan2(dx, dz)
+    perp_scale = max(80.0, leeway_uncertainty * 0.3)
+    next_id = 0
+
+    # Three debris points along the drift line — age decreases downstream.
+    for frac, age in [(0.20, 2.5), (0.50, 1.5), (0.80, 0.5)]:
+        base_x = lkp_x + dx * frac
+        base_z = lkp_z + dz * frac
+        jitter = float(rng.uniform(-perp_scale, perp_scale))
+        ex = base_x + perp_x * jitter
+        ez = base_z + perp_z * jitter
+        ex, ez = _clamp_to_world(ex, ez, world_size, margin=30.0)
+        evidence.append(
+            Evidence(
+                id=next_id,
+                position=Vec3(ex, 0.0, ez),
+                kind=EvidenceKind.DEBRIS.value,
+                confidence=0.5,
+                heading=None,
+                age_hours=age,
+            )
+        )
+        next_id += 1
+
+    # Directional "slick" (footprint kind, heading = current bearing) near
+    # the midpoint — tells the posterior to bias updates along-current.
+    slick_x = lkp_x + dx * 0.55 + perp_x * float(rng.uniform(-60.0, 60.0))
+    slick_z = lkp_z + dz * 0.55 + perp_z * float(rng.uniform(-60.0, 60.0))
+    slick_x, slick_z = _clamp_to_world(slick_x, slick_z, world_size, margin=30.0)
+    evidence.append(
+        Evidence(
+            id=next_id,
+            position=Vec3(slick_x, 0.0, slick_z),
+            kind=EvidenceKind.FOOTPRINT.value,
+            confidence=0.55,
+            heading=drift_heading,
+            age_hours=1.0,
+        )
+    )
+    next_id += 1
+
+    # Signal marker at the projected drift COM (flare, dye, or EPIRB).
+    sf_x = com_x + float(rng.uniform(-120.0, 120.0))
+    sf_z = com_z + float(rng.uniform(-120.0, 120.0))
+    sf_x, sf_z = _clamp_to_world(sf_x, sf_z, world_size, margin=30.0)
+    evidence.append(
+        Evidence(
+            id=next_id,
+            position=Vec3(sf_x, 0.0, sf_z),
+            kind=EvidenceKind.SIGNAL_FIRE.value,
+            confidence=0.9,
+            heading=None,
+            age_hours=0.25,
+        )
+    )
+
+    return evidence
+
+
+def _plant_runout_evidence(
+    fracture_x: float,
+    fracture_z: float,
+    toe_x: float,
+    toe_z: float,
+    world_size: int,
+    rng: np.random.Generator,
+    *,
+    half_angle_deg: float = 18.0,
+) -> list[Evidence]:
+    """Avalanche runout cone — equipment strewn from fracture line to toe.
+
+    Geometry is a widening cone along the fall-line:
+      * fracture-line footprint pointing down-slope (ski/snowboard tracks)
+      * three debris points fanning out, lateral spread proportional to
+        cone half-angle × distance from fracture
+      * signal fire near the toe — strongest burial concentration, often
+        where an avalanche-airbag beacon would be active
+
+    Evidence is fresh (sub-hour ages) — avalanche survival window is
+    short so clues are expected to be recent.
+    """
+    evidence: list[Evidence] = []
+    dx = toe_x - fracture_x
+    dz = toe_z - fracture_z
+    runout = math.hypot(dx, dz)
+    if runout < 1.0:
+        return evidence
+
+    perp_x = -dz / runout
+    perp_z = dx / runout
+    fall_heading = math.atan2(dx, dz)
+    half_angle = math.radians(half_angle_deg)
+    next_id = 0
+
+    # Fracture-line footprint — directional, down-slope.
+    evidence.append(
+        Evidence(
+            id=next_id,
+            position=Vec3(fracture_x, 0.0, fracture_z),
+            kind=EvidenceKind.FOOTPRINT.value,
+            confidence=0.65,
+            heading=fall_heading,
+            age_hours=0.5,
+        )
+    )
+    next_id += 1
+
+    # Three debris points along the cone, alternating lateral side with
+    # spread proportional to cone half-angle × distance.
+    cone_layout = [(0.40, -0.6), (0.65, 0.7), (0.90, -0.3)]
+    for frac, side in cone_layout:
+        base_x = fracture_x + dx * frac
+        base_z = fracture_z + dz * frac
+        max_spread = math.tan(half_angle) * runout * frac
+        lateral = max_spread * side
+        lateral += float(rng.uniform(-30.0, 30.0))
+        ex = base_x + perp_x * lateral
+        ez = base_z + perp_z * lateral
+        ex, ez = _clamp_to_world(ex, ez, world_size, margin=30.0)
+        evidence.append(
+            Evidence(
+                id=next_id,
+                position=Vec3(ex, 0.0, ez),
+                kind=EvidenceKind.DEBRIS.value,
+                confidence=0.5,
+                heading=None,
+                age_hours=0.5,
+            )
+        )
+        next_id += 1
+
+    # Signal fire near the toe — avalanche-airbag beacon / freshest signal.
+    sf_x = toe_x + float(rng.uniform(-100.0, 100.0))
+    sf_z = toe_z + float(rng.uniform(-100.0, 100.0))
+    sf_x, sf_z = _clamp_to_world(sf_x, sf_z, world_size, margin=30.0)
+    evidence.append(
+        Evidence(
+            id=next_id,
+            position=Vec3(sf_x, 0.0, sf_z),
+            kind=EvidenceKind.SIGNAL_FIRE.value,
+            confidence=0.85,
+            heading=None,
+            age_hours=0.1,
+        )
+    )
+
+    return evidence
+
+
+def _plant_structure_evidence(
+    clusters: list[Cluster],
+    world_size: int,
+    rng: np.random.Generator,
+) -> list[Evidence]:
+    """Disaster response — evidence concentrated at densest-structure clusters.
+
+    Clusters are weighted by structural density; rather than lay a single
+    trail, we plant:
+      * signal fires at the two highest-weight clusters (trapped survivors
+        signal from the most-populated collapse sites)
+      * debris at the next three clusters (secondary collapse sites)
+
+    Jitter is bounded by each cluster's own radius, so evidence sits inside
+    the cluster footprint (where survivors actually are) rather than between
+    them.
+    """
+    if not clusters:
+        return []
+
+    ranked = sorted(clusters, key=lambda c: c[3], reverse=True)
+    evidence: list[Evidence] = []
+    next_id = 0
+
+    for cx, cz, _cr, _w in ranked[:2]:
+        jx = float(rng.uniform(-80.0, 80.0))
+        jz = float(rng.uniform(-80.0, 80.0))
+        ex, ez = _clamp_to_world(cx + jx, cz + jz, world_size, margin=30.0)
+        evidence.append(
+            Evidence(
+                id=next_id,
+                position=Vec3(ex, 0.0, ez),
+                kind=EvidenceKind.SIGNAL_FIRE.value,
+                confidence=0.85,
+                heading=None,
+                age_hours=0.5,
+            )
+        )
+        next_id += 1
+
+    for cx, cz, cr, _w in ranked[2:5]:
+        spread = max(40.0, cr * 0.3)
+        jx = float(rng.uniform(-spread, spread))
+        jz = float(rng.uniform(-spread, spread))
+        ex, ez = _clamp_to_world(cx + jx, cz + jz, world_size, margin=30.0)
+        evidence.append(
+            Evidence(
+                id=next_id,
+                position=Vec3(ex, 0.0, ez),
+                kind=EvidenceKind.DEBRIS.value,
+                confidence=0.55,
+                heading=None,
+                age_hours=1.5,
+            )
+        )
+        next_id += 1
 
     return evidence
 
@@ -552,6 +792,19 @@ def maritime_sar(world_size: int, seed: int) -> SearchMission:
         {"label": "Projected drift", "kind": "drift", "position": [com_x, com_z]},
     ]
 
+    # Evidence trail: debris strewn along the drift line from LKP to the
+    # projected COM, with a signal marker at the leading edge.
+    evidence_rng = np.random.default_rng(seed + 2003)
+    evidence = _plant_drift_evidence(
+        lkp_x=lkp_x,
+        lkp_z=lkp_z,
+        com_x=com_x,
+        com_z=com_z,
+        leeway_uncertainty=leeway_uncertainty,
+        world_size=world_size,
+        rng=evidence_rng,
+    )
+
     return SearchMission(
         name="maritime_sar",
         title="Maritime SAR — Drift Search",
@@ -562,7 +815,10 @@ def maritime_sar(world_size: int, seed: int) -> SearchMission:
         ),
         known_facts=[
             f"LKP at ({lkp_x:.0f}, {lkp_z:.0f})",
-            f"{hours_elapsed:.1f}h elapsed; drift {drift_dist:.0f}m bearing {math.degrees(current_bearing):.0f}°",
+            (
+                f"{hours_elapsed:.1f}h elapsed; drift {drift_dist:.0f}m "
+                f"bearing {math.degrees(current_bearing):.0f}°"
+            ),
             f"Current {current_speed:.2f} m/s",
             "1-3 subjects, hypothermia clock running",
         ],
@@ -573,6 +829,7 @@ def maritime_sar(world_size: int, seed: int) -> SearchMission:
         world_size=world_size,
         seed=seed,
         intel_pins=intel_pins,
+        evidence=evidence,
     )
 
 
@@ -627,6 +884,18 @@ def avalanche(world_size: int, seed: int) -> SearchMission:
         {"label": "Runout toe", "kind": "toe", "position": [toe_x, toe_z]},
     ]
 
+    # Evidence trail: fracture-line track + debris fanning down the runout
+    # cone + signal near the toe (highest burial concentration).
+    evidence_rng = np.random.default_rng(seed + 2004)
+    evidence = _plant_runout_evidence(
+        fracture_x=fracture_x,
+        fracture_z=fracture_z,
+        toe_x=toe_x,
+        toe_z=toe_z,
+        world_size=world_size,
+        rng=evidence_rng,
+    )
+
     return SearchMission(
         name="avalanche",
         title="Avalanche — Burial Search",
@@ -648,6 +917,7 @@ def avalanche(world_size: int, seed: int) -> SearchMission:
         world_size=world_size,
         seed=seed,
         intel_pins=intel_pins,
+        evidence=evidence,
     )
 
 
@@ -696,6 +966,16 @@ def disaster_response(world_size: int, seed: int) -> SearchMission:
         },
     ]
 
+    # Evidence: signal fires at the top-weight collapse clusters, debris
+    # at the next tier. Anchored to cluster centers so clues sit inside
+    # the same structure-density zones where survivors actually spawn.
+    evidence_rng = np.random.default_rng(seed + 2005)
+    evidence = _plant_structure_evidence(
+        clusters=clusters,
+        world_size=world_size,
+        rng=evidence_rng,
+    )
+
     return SearchMission(
         name="disaster_response",
         title="Disaster Response — Wide-Area Search",
@@ -717,6 +997,7 @@ def disaster_response(world_size: int, seed: int) -> SearchMission:
         world_size=world_size,
         seed=seed,
         intel_pins=intel_pins,
+        evidence=evidence,
     )
 
 

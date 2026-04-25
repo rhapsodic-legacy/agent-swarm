@@ -98,8 +98,8 @@ def test_headwind_drains_faster_than_tailwind():
     headwind_drone = _drone(velocity=Vec3(10.0, 0.0, 0.0))  # moving east
     tailwind_drone = _drone(velocity=Vec3(10.0, 0.0, 0.0))  # moving east
 
-    east_wind = _constant_wind(8.0, 0.0)    # wind east → tailwind for east-mover
-    west_wind = _constant_wind(-8.0, 0.0)   # wind west → headwind for east-mover
+    east_wind = _constant_wind(8.0, 0.0)  # wind east → tailwind for east-mover
+    west_wind = _constant_wind(-8.0, 0.0)  # wind west → headwind for east-mover
 
     dt = 1.0 / 20.0
     for _ in range(100):  # 5 seconds

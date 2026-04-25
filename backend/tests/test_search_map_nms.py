@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import math
 
-import pytest
-
 from src.simulation.search_map import SearchMap
 
 
@@ -28,9 +26,7 @@ def test_diverse_hotspots_returns_separated_cells():
             dx = positions[i][0] - positions[j][0]
             dz = positions[i][1] - positions[j][1]
             dist = math.sqrt(dx * dx + dz * dz)
-            assert dist >= 1000.0, (
-                f"Hotspots {i} and {j} are only {dist:.0f}m apart (need ≥1000m)"
-            )
+            assert dist >= 1000.0, f"Hotspots {i} and {j} are only {dist:.0f}m apart (need ≥1000m)"
 
 
 def test_diverse_hotspots_returns_in_priority_order():

@@ -10,13 +10,13 @@ Run with: uv run pytest tests/test_e2e_pipeline.py -x -v
 from __future__ import annotations
 
 import json
-import math
 
 import numpy as np
 import pytest
 
+from src.simulation.drone import create_drone_fleet, detect_survivors
+from src.simulation.engine import create_world, tick, tick_chunked
 from src.simulation.types import (
-    ChunkedWorldConfig,
     FOG_EXPLORED,
     FOG_UNEXPLORED,
     SimConfig,
@@ -24,14 +24,12 @@ from src.simulation.types import (
     Vec3,
     WorldState,
 )
-from src.simulation.engine import create_world, tick, tick_chunked, get_coverage_pct
-from src.simulation.drone import create_drone_fleet, detect_survivors
-from src.terrain.chunked import ChunkedWorld, ChunkCoord
-
+from src.terrain.chunked import ChunkCoord, ChunkedWorld
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_chunked_world(
     world_size: int = 10240,
@@ -66,8 +64,13 @@ def _make_chunked_world(
     fog_res = max(world_size // 10, 256)
     fog = np.full((fog_res, fog_res), FOG_UNEXPLORED, dtype=np.int8)
     world = WorldState(
-        tick=0, elapsed=0.0, terrain=stub, drones=drones,
-        survivors=(), fog_grid=fog, base_position=base,
+        tick=0,
+        elapsed=0.0,
+        terrain=stub,
+        drones=drones,
+        survivors=(),
+        fog_grid=fog,
+        base_position=base,
     )
     return cw, config, world
 
@@ -75,6 +78,7 @@ def _make_chunked_world(
 # ---------------------------------------------------------------------------
 # 1. Chunk generation produces valid terrain
 # ---------------------------------------------------------------------------
+
 
 class TestChunkGeneration:
     def test_chunk_has_valid_heightmap(self):
@@ -109,6 +113,7 @@ class TestChunkGeneration:
 # 2. Survivors exist and are reachable
 # ---------------------------------------------------------------------------
 
+
 class TestSurvivorPlacement:
     def test_world_has_survivors(self):
         """The world MUST have survivors somewhere."""
@@ -142,7 +147,6 @@ class TestSurvivorPlacement:
         """Survivor positions must be within world bounds."""
         cw, _, _ = _make_chunked_world()
         ws = cw.get_world_size()
-        cs = cw.get_chunk_size()
         for cz in range(min(cw._chunks_z, 3)):
             for cx in range(min(cw._chunks_x, 3)):
                 chunk = cw.get_chunk(ChunkCoord(cx, cz))
@@ -176,6 +180,7 @@ class TestSurvivorPlacement:
 # 3. Tick produces valid state transitions
 # ---------------------------------------------------------------------------
 
+
 class TestTickChunked:
     def test_tick_advances_time(self):
         cw, config, world = _make_chunked_world()
@@ -190,12 +195,6 @@ class TestTickChunked:
         # Run 100 ticks
         for _ in range(100):
             world = tick_chunked(world, 0.05, cw, rng=rng, config=config)
-        # At least some drones should have moved from their starting position
-        base = world.base_position
-        moved = sum(
-            1 for d in world.drones
-            if (d.position - base).length_xz() > 5.0
-        )
         # Drones may not move without commands, but physics should run
         assert world.tick == 100
 
@@ -217,13 +216,18 @@ class TestTickChunked:
                 if chunk.survivors:
                     # Move a drone to this chunk
                     from dataclasses import replace as dr
+
                     s = chunk.survivors[0]
                     moved_drones = list(world.drones)
                     moved_drones[0] = dr(moved_drones[0], position=s.position)
                     world_moved = WorldState(
-                        tick=world.tick, elapsed=world.elapsed, terrain=world.terrain,
-                        drones=tuple(moved_drones), survivors=world.survivors,
-                        fog_grid=world.fog_grid, base_position=world.base_position,
+                        tick=world.tick,
+                        elapsed=world.elapsed,
+                        terrain=world.terrain,
+                        drones=tuple(moved_drones),
+                        survivors=world.survivors,
+                        fog_grid=world.fog_grid,
+                        base_position=world.base_position,
                     )
                     world2 = tick_chunked(world_moved, 0.05, cw, rng=rng, config=config)
                     assert len(world2.survivors) > 0, (
@@ -245,6 +249,7 @@ class TestTickChunked:
 # 4. Detection works end-to-end
 # ---------------------------------------------------------------------------
 
+
 class TestDetectionE2E:
     def test_drone_detects_nearby_survivor_in_chunk(self):
         """Place a drone right on top of a survivor — it MUST detect it."""
@@ -263,6 +268,7 @@ class TestDetectionE2E:
         assert survivor_pos is not None, "No survivors found in any chunk"
 
         from src.simulation.types import Drone, DroneStatus
+
         drone = Drone(
             id=0,
             position=Vec3(survivor_pos.x, survivor_pos.y + 30.0, survivor_pos.z),
@@ -271,20 +277,23 @@ class TestDetectionE2E:
             sensor_active=True,
         )
         detected = detect_survivors(
-            drone, survivors_tuple,
+            drone,
+            survivors_tuple,
             biome_fn=cw.get_biome_at,
             height_fn=cw.get_heightmap_at,
             config=config,
         )
         assert len(detected) > 0, (
-            f"Drone at ({drone.position.x:.0f}, {drone.position.y:.0f}, {drone.position.z:.0f}) "
-            f"failed to detect survivor at ({survivor_pos.x:.0f}, {survivor_pos.y:.0f}, {survivor_pos.z:.0f})"
+            f"Drone at ({drone.position.x:.0f}, {drone.position.y:.0f}, {drone.position.z:.0f})"
+            f" failed to detect survivor at "
+            f"({survivor_pos.x:.0f}, {survivor_pos.y:.0f}, {survivor_pos.z:.0f})"
         )
 
 
 # ---------------------------------------------------------------------------
 # 5. Serialization round-trip
 # ---------------------------------------------------------------------------
+
 
 class TestSerialization:
     def test_chunk_serializes_to_valid_json(self):
@@ -322,16 +331,17 @@ class TestSerialization:
                 cw.get_chunk(ChunkCoord(cx, cz))
 
         found_survivors = [s for s in world.survivors if s.discovered]
-        all_chunk_survivors = [
-            s for chunk in cw._cache.values() for s in chunk.survivors
-        ]
+        all_chunk_survivors = [s for chunk in cw._cache.values() for s in chunk.survivors]
         state_msg = {
             "type": "state_update",
             "tick": world.tick,
             "elapsed": world.elapsed,
             "drones": [{"id": d.id} for d in world.drones],
             "survivors": [{"id": s.id} for s in found_survivors],
-            "all_survivors": [{"id": s.id, "position": [s.position.x, s.position.y, s.position.z]} for s in all_chunk_survivors],
+            "all_survivors": [
+                {"id": s.id, "position": [s.position.x, s.position.y, s.position.z]}
+                for s in all_chunk_survivors
+            ],
             "coverage_pct": 0.0,
         }
         json_str = json.dumps(state_msg)
@@ -347,6 +357,7 @@ class TestSerialization:
 # ---------------------------------------------------------------------------
 # 6. Lazy proxy lookups work correctly
 # ---------------------------------------------------------------------------
+
 
 class TestLazyProxies:
     def test_heightmap_proxy_matches_chunk(self):
@@ -374,6 +385,7 @@ class TestLazyProxies:
 # ---------------------------------------------------------------------------
 # 7. Monolithic path still works
 # ---------------------------------------------------------------------------
+
 
 class TestDroneBasePosition:
     def test_drones_spawn_at_base(self):

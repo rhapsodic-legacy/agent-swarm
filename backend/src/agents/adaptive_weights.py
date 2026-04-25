@@ -27,8 +27,8 @@ Design notes:
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from src.agents.priority_market import PriorityWeights
 
@@ -38,17 +38,17 @@ ADAPT_MIN = 0.5
 ADAPT_MAX = 3.0
 
 # Per-event nudges. Small so the system adapts gradually.
-FIND_CREDIT = 0.08          # +8% on a survivor/evidence find attributable to this source
-UNUSED_DEBIT = 0.02         # -2% when an operator asset expires with no finds
-OVERRIDE_CREDIT = 0.04      # +4% to switching_cost on operator override of a drone task
+FIND_CREDIT = 0.08  # +8% on a survivor/evidence find attributable to this source
+UNUSED_DEBIT = 0.02  # -2% when an operator asset expires with no finds
+OVERRIDE_CREDIT = 0.04  # +4% to switching_cost on operator override of a drone task
 
 # Gentle decay toward 1.0 each tick — so learning doesn't accumulate forever.
 # At 10Hz, this halves the deviation from 1.0 every ~700s (~12 minutes).
 DECAY_PER_TICK = 0.0001
 
 # Trust slider bounds — keep the operator in a sane range.
-TRUST_MIN = 0.0    # "operator hints are purely advisory"
-TRUST_MAX = 3.0    # "operator is almost always right"
+TRUST_MIN = 0.0  # "operator hints are purely advisory"
+TRUST_MAX = 3.0  # "operator is almost always right"
 
 # Sources that operator_trust scales (only operator-originated sources — we
 # never scale poc_field or survivor_find by trust, those are system-truth).
@@ -60,9 +60,9 @@ class OutcomeRecord:
     """One attributable event in the outcome ring buffer."""
 
     tick: int
-    source: str                 # PriorityAsset.source, or a DroneTask name for overrides
-    kind: str                   # "find" | "unused" | "override"
-    asset_id: str = ""          # for traceability
+    source: str  # PriorityAsset.source, or a DroneTask name for overrides
+    kind: str  # "find" | "unused" | "override"
+    asset_id: str = ""  # for traceability
 
 
 @dataclass
@@ -91,8 +91,8 @@ class AdaptiveWeights:
         self,
         tick: int,
         survivor_xz: tuple[float, float],
-        active_zones: Iterable,       # PriorityZone objects (must expose .contains(x,z) + .priority + .zone_id)
-        active_pins: Iterable,        # IntelPin objects (must expose .x, .z, .radius, .pin_id)
+        active_zones: Iterable,  # PriorityZone (.contains(x,z) + .priority + .zone_id)
+        active_pins: Iterable,  # IntelPin objects (must expose .x, .z, .radius, .pin_id)
     ) -> list[tuple[str, str]]:
         """Attribute a survivor find to any operator assets overlapping it.
 
@@ -188,9 +188,7 @@ class AdaptiveWeights:
         """Compact snapshot for HUD / chat status / tests."""
         return {
             "operator_trust": round(self.operator_trust, 3),
-            "learned_source_scale": {
-                k: round(v, 3) for k, v in self.learned_source_scale.items()
-            },
+            "learned_source_scale": {k: round(v, 3) for k, v in self.learned_source_scale.items()},
             "learned_switching_cost": {
                 k: round(v, 3) for k, v in self.learned_switching_cost.items()
             },

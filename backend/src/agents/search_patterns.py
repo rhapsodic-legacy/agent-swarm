@@ -308,7 +308,7 @@ def _survivor_proximity_boost(
         # Gaussian-like falloff: peak = max_boost at distance 0, ~1.0 at radius
         # sigma chosen so exp(-(radius/sigma)^2) ≈ 0 → sigma = radius / 3
         sigma = radius / 3.0
-        contribution = max_boost * np.exp(-(dists ** 2) / (2.0 * sigma ** 2))
+        contribution = max_boost * np.exp(-(dists**2) / (2.0 * sigma**2))
         boost += contribution
 
     return boost

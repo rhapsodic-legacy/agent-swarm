@@ -238,7 +238,7 @@ def test_hold_position_command():
     # Subsequent ticks with no commands: drone should hover (near-zero horiz velocity).
     world = _tick_n(world, 5)
     hovering = world.drones[0]
-    horiz_speed = (hovering.velocity.x ** 2 + hovering.velocity.z ** 2) ** 0.5
+    horiz_speed = (hovering.velocity.x**2 + hovering.velocity.z**2) ** 0.5
     assert horiz_speed < 1.0
 
 

@@ -52,9 +52,7 @@ def update_survivors(
     # Pre-filter to active drones — failed / recharging drones don't scare
     # survivors. Index by position for cheap nearest lookup.
     active_drone_positions: list[tuple[float, float]] = [
-        (d.position.x, d.position.z)
-        for d in drones
-        if d.status == DroneStatus.ACTIVE
+        (d.position.x, d.position.z) for d in drones if d.status == DroneStatus.ACTIVE
     ]
 
     for survivor in survivors:

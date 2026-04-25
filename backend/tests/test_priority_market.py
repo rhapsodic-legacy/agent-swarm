@@ -33,11 +33,17 @@ def _asset(
     source: str = "poc_field",
 ) -> PriorityAsset:
     return PriorityAsset(
-        asset_id=asset_id, x=x, z=z, radius=50.0, value=value, source=source,
+        asset_id=asset_id,
+        x=x,
+        z=z,
+        radius=50.0,
+        value=value,
+        source=source,
     )
 
 
 # ---------------------------------------------------------------- bid() tests
+
 
 def test_bid_infeasible_battery_returns_zero() -> None:
     """A drone with no battery reserve cannot bid on a distant asset."""
@@ -77,7 +83,12 @@ def test_bid_source_scale_prefers_operator_zone() -> None:
     a_poc = _asset(asset_id="p", x=500.0, z=0.0, value=1.0, source="poc_field")
     w = PriorityWeights()
     assert bid(d, "IDLE", a_zone, Vec3(0, 0, 0), _cfg(), w) > bid(
-        d, "IDLE", a_poc, Vec3(0, 0, 0), _cfg(), w,
+        d,
+        "IDLE",
+        a_poc,
+        Vec3(0, 0, 0),
+        _cfg(),
+        w,
     )
 
 
@@ -100,6 +111,7 @@ def test_bid_base_return_penalty_punishes_far_base() -> None:
 
 
 # ---------------------------------------------------------------- clear_market()
+
 
 def test_clear_market_assigns_each_drone_at_most_once() -> None:
     d0 = _drone(0, x=100.0, z=0.0)
@@ -125,8 +137,8 @@ def test_clear_market_respects_per_asset_capacity() -> None:
     """A poc_field asset caps at capacity 1 — only one drone can take it."""
     d0 = _drone(0, x=100.0, z=0.0)
     d1 = _drone(1, x=110.0, z=0.0)
-    a_big = _asset(asset_id="big", x=500.0, z=0.0)        # poc_field → cap 1
-    a_far = _asset(asset_id="far", x=-3000.0, z=0.0)      # poc_field → cap 1
+    a_big = _asset(asset_id="big", x=500.0, z=0.0)  # poc_field → cap 1
+    a_far = _asset(asset_id="far", x=-3000.0, z=0.0)  # poc_field → cap 1
     assignments = clear_market(
         drones=[d0, d1],
         drone_tasks={0: "IDLE", 1: "IDLE"},
@@ -145,7 +157,11 @@ def test_clear_market_operator_zone_absorbs_multiple_drones() -> None:
     drones = [_drone(i, x=100.0 + i * 5, z=0.0) for i in range(8)]
     tasks = {d.id: "IDLE" for d in drones}
     zone_asset = _asset(
-        asset_id="zone_hot", x=400.0, z=0.0, value=5e-4, source="operator_high_zone",
+        asset_id="zone_hot",
+        x=400.0,
+        z=0.0,
+        value=5e-4,
+        source="operator_high_zone",
     )
     # Include a distant fallback so drones that don't win the zone have
     # somewhere to go.

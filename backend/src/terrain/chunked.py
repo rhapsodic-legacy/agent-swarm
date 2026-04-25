@@ -382,11 +382,14 @@ class ChunkedWorld:
         self._survivor_clusters: list[tuple[float, float, float, float]] = []
 
         # 1. Impact site: tight cluster, 40% of survivors (injured, near wreckage)
-        self._survivor_clusters.append((
-            crash_x, crash_z,
-            150.0,  # 150m radius — tight crash site
-            0.40,
-        ))
+        self._survivor_clusters.append(
+            (
+                crash_x,
+                crash_z,
+                150.0,  # 150m radius — tight crash site
+                0.40,
+            )
+        )
 
         # 2. Debris field: elongated scatter along crash trajectory
         #    2-3 smaller clusters along the approach vector
@@ -397,26 +400,32 @@ class ChunkedWorld:
             dz = crash_z + math.sin(debris_angle) * offset
             dx = max(50.0, min(world_size - 50.0, dx))
             dz = max(50.0, min(world_size - 50.0, dz))
-            self._survivor_clusters.append((
-                dx, dz,
-                100.0 + i * 30,  # widening debris scatter
-                0.08,  # 8% each = 24% total in debris field
-            ))
+            self._survivor_clusters.append(
+                (
+                    dx,
+                    dz,
+                    100.0 + i * 30,  # widening debris scatter
+                    0.08,  # 8% each = 24% total in debris field
+                )
+            )
 
         # 3. Walked-away survivors: people who left crash site seeking help
         #    Sparse, along natural movement directions (downhill, toward roads)
-        for i in range(2):
+        for _ in range(2):
             walk_angle = crash_angle + float(rng.uniform(-1.0, 1.0))
             walk_dist = float(rng.uniform(800, 2500))
             wx = crash_x + math.cos(walk_angle) * walk_dist
             wz = crash_z + math.sin(walk_angle) * walk_dist
             wx = max(50.0, min(world_size - 50.0, wx))
             wz = max(50.0, min(world_size - 50.0, wz))
-            self._survivor_clusters.append((
-                wx, wz,
-                300.0,  # wider scatter — they wandered
-                0.08,  # 8% each = 16% walked away
-            ))
+            self._survivor_clusters.append(
+                (
+                    wx,
+                    wz,
+                    300.0,  # wider scatter — they wandered
+                    0.08,  # 8% each = 16% walked away
+                )
+            )
 
         # 4. Unrelated lost hikers: independent of crash, elsewhere on map.
         # Separation from crash is proportional to world size so tiny test
@@ -426,16 +435,21 @@ class ChunkedWorld:
             hx = float(rng.uniform(0.15, 0.85)) * world_size
             hz = float(rng.uniform(0.15, 0.85)) * world_size
             attempts = 0
-            while (math.sqrt((hx - crash_x) ** 2 + (hz - crash_z) ** 2)
-                   < min_separation and attempts < 20):
+            while (
+                math.sqrt((hx - crash_x) ** 2 + (hz - crash_z) ** 2) < min_separation
+                and attempts < 20
+            ):
                 hx = float(rng.uniform(0.15, 0.85)) * world_size
                 hz = float(rng.uniform(0.15, 0.85)) * world_size
                 attempts += 1
-            self._survivor_clusters.append((
-                hx, hz,
-                50.0,  # very tight — single person
-                0.05,  # 5% each = 10% unrelated
-            ))
+            self._survivor_clusters.append(
+                (
+                    hx,
+                    hz,
+                    50.0,  # very tight — single person
+                    0.05,  # 5% each = 10% unrelated
+                )
+            )
 
         self._init_remaining(seed)
 
@@ -544,10 +558,10 @@ class ChunkedWorld:
             nearest_z = max(chunk_z_min, min(chunk_z_max, cl_z))
             dist = math.sqrt((nearest_x - cl_x) ** 2 + (nearest_z - cl_z) ** 2)
             if dist < cl_r:
-                falloff = math.exp(-(dist ** 2) / (2.0 * max(cl_r / 2.5, 1.0) ** 2))
-                survivors_for_chunk += max(1, round(
-                    self._config.survivor_count * cl_weight * falloff
-                ))
+                falloff = math.exp(-(dist**2) / (2.0 * max(cl_r / 2.5, 1.0) ** 2))
+                survivors_for_chunk += max(
+                    1, round(self._config.survivor_count * cl_weight * falloff)
+                )
             elif dist < cl_r * 2.0:
                 survivors_for_chunk += 1 if (coord.cx + coord.cz) % 3 == 0 else 0
 
@@ -779,10 +793,10 @@ class ChunkedWorld:
                         nearest_z = max(chunk_z_min, min(chunk_z_max, cl_z))
                         dist = math.sqrt((nearest_x - cl_x) ** 2 + (nearest_z - cl_z) ** 2)
                         if dist < cl_r:
-                            falloff = math.exp(-(dist ** 2) / (2.0 * max(cl_r / 2.5, 1.0) ** 2))
-                            survivors_for_chunk += max(1, round(
-                                self._config.survivor_count * cl_weight * falloff
-                            ))
+                            falloff = math.exp(-(dist**2) / (2.0 * max(cl_r / 2.5, 1.0) ** 2))
+                            survivors_for_chunk += max(
+                                1, round(self._config.survivor_count * cl_weight * falloff)
+                            )
                         elif dist < cl_r * 2.0:
                             survivors_for_chunk += 1 if (cx + cz) % 3 == 0 else 0
 
@@ -796,12 +810,14 @@ class ChunkedWorld:
                             sz = origin_z + float(rng.uniform(10, cs - 10))
                             # Use Y=50 as approximate ground level (avoid slow chunk gen)
                             sid = cx * 100000 + cz * 1000 + i
-                            all_survivors.append(Survivor(
-                                id=sid,
-                                position=Vec3(x=sx, y=50.0, z=sz),
-                                mobile=bool(rng.random() < 0.4),
-                                speed=float(rng.uniform(0.3, 0.8)),
-                            ))
+                            all_survivors.append(
+                                Survivor(
+                                    id=sid,
+                                    position=Vec3(x=sx, y=50.0, z=sz),
+                                    mobile=bool(rng.random() < 0.4),
+                                    speed=float(rng.uniform(0.3, 0.8)),
+                                )
+                            )
 
         self._all_survivors_cache = all_survivors
         return all_survivors

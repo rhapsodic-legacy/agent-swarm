@@ -309,8 +309,11 @@ async def simulation_loop() -> None:
     global pending_commands, sim_reset_requested, current_world, pending_reset_config, sim_config
     global current_mission, current_mission_name, chunked_config
 
-    logger.info("Initializing chunked world (%dm, %dm chunks)...",
-                chunked_config.world_size, chunked_config.chunk_size)
+    logger.info(
+        "Initializing chunked world (%dm, %dm chunks)...",
+        chunked_config.world_size,
+        chunked_config.chunk_size,
+    )
 
     seed = chunked_config.seed
     world_size = chunked_config.world_size
@@ -318,8 +321,12 @@ async def simulation_loop() -> None:
     # Build the initial mission. Drives clusters, base position, and PoC prior.
     mission = build_mission(current_mission_name, world_size, seed)
     current_mission = mission
-    logger.info("Mission: %s (base=%.0f,%.0f)",
-                mission.title, mission.base_position.x, mission.base_position.z)
+    logger.info(
+        "Mission: %s (base=%.0f,%.0f)",
+        mission.title,
+        mission.base_position.x,
+        mission.base_position.z,
+    )
 
     chunked_world = ChunkedWorld(
         chunked_config.world_size,
@@ -332,6 +339,7 @@ async def simulation_loop() -> None:
     base = mission.base_position
 
     from src.simulation.drone import create_drone_fleet
+
     drones = create_drone_fleet(sim_config.drone_count, base, sim_config)
     # Terrain stub with lazy proxies so agent code can do heightmap[row][col]
     stub_terrain = Terrain(
@@ -351,6 +359,7 @@ async def simulation_loop() -> None:
     # the gap between this prior and the ground-truth clusters; for now the
     # prior is shaped from the same cluster geometry the mission generated.
     from src.simulation.search_map import SearchMap
+
     search_map = SearchMap.empty(world_size=float(world_size), cell_size=40.0)
     mission.seed_poc_grid(search_map)
 
@@ -369,7 +378,6 @@ async def simulation_loop() -> None:
         evidence=tuple(mission.evidence),
     )
 
-    fog_scale = world_size / fog_res  # meters per fog cell
     rng = np.random.default_rng(seed)
     dt = 1.0 / sim_config.tick_rate
     coordinator = SwarmCoordinator(sim_config)
@@ -388,8 +396,10 @@ async def simulation_loop() -> None:
     logger.info(
         "Chunked world ready: %d drones, %dx%d world, %dx%d chunks (%d total)",
         len(world.drones),
-        world_size, world_size,
-        chunked_config.chunk_size, chunked_config.chunk_size,
+        world_size,
+        world_size,
+        chunked_config.chunk_size,
+        chunked_config.chunk_size,
         chunked_world.get_total_chunks(),
     )
 
@@ -412,11 +422,15 @@ async def simulation_loop() -> None:
                 drone_max_speed=float(cfg.get("drone_speed", sim_config.drone_max_speed)),
                 drone_sensor_range=float(cfg.get("sensor_range", sim_config.drone_sensor_range)),
                 drone_comms_range=float(cfg.get("comms_range", sim_config.drone_comms_range)),
-                drone_battery_drain_rate=float(cfg.get("battery_drain", sim_config.drone_battery_drain_rate)),
+                drone_battery_drain_rate=float(
+                    cfg.get("battery_drain", sim_config.drone_battery_drain_rate)
+                ),
                 max_elevation=float(cfg.get("max_elevation", sim_config.max_elevation)),
                 canopy_occlusion=float(cfg.get("canopy_occlusion", sim_config.canopy_occlusion)),
                 urban_occlusion=float(cfg.get("urban_occlusion", sim_config.urban_occlusion)),
-                weather_visibility=float(cfg.get("weather_visibility", sim_config.weather_visibility)),
+                weather_visibility=float(
+                    cfg.get("weather_visibility", sim_config.weather_visibility)
+                ),
                 night_penalty=float(cfg.get("night_penalty", sim_config.night_penalty)),
                 transponder_ratio=float(cfg.get("transponder_ratio", sim_config.transponder_ratio)),
                 detection_requires_los=sim_config.detection_requires_los,
@@ -446,8 +460,9 @@ async def simulation_loop() -> None:
             # Pick mission for the reset (defaults to current).
             mission_name = str(cfg.get("mission", current_mission_name))
             if mission_name not in available_missions():
-                logger.warning("Unknown mission '%s', falling back to %s",
-                               mission_name, current_mission_name)
+                logger.warning(
+                    "Unknown mission '%s', falling back to %s", mission_name, current_mission_name
+                )
                 mission_name = current_mission_name
             current_mission_name = mission_name
             mission = build_mission(mission_name, world_size, new_seed)
@@ -466,7 +481,8 @@ async def simulation_loop() -> None:
             base = mission.base_position
             drones = create_drone_fleet(
                 int(cfg.get("drone_count", sim_config.drone_count)),
-                base, sim_config,
+                base,
+                sim_config,
             )
             stub_terrain = Terrain(
                 width=world_size,
@@ -546,7 +562,8 @@ async def simulation_loop() -> None:
                         agent = coordinator.agents.get(cmd.drone_id)
                         if agent is not None:
                             coordinator.adaptive.record_operator_override(
-                                world.tick, agent.task.name,
+                                world.tick,
+                                agent.task.name,
                             )
                     drone_commands.append(cmd)
 
@@ -556,7 +573,9 @@ async def simulation_loop() -> None:
 
             # Get AI agent commands (uses is_hazardous_at to route around gusts)
             agent_commands = coordinator.update(
-                world, sim_config, wind_hazard_fn=weather.is_hazardous_at,
+                world,
+                sim_config,
+                wind_hazard_fn=weather.is_hazardous_at,
             )
 
             # Human commands apply LAST so they win within the tick —
@@ -566,8 +585,13 @@ async def simulation_loop() -> None:
 
             # Tick with chunked terrain (wind_fn queries live weather)
             world = tick_chunked(
-                world, dt * sim_speed, chunked_world, commands,
-                rng=rng, config=sim_config, wind_fn=weather.get_wind_at,
+                world,
+                dt * sim_speed,
+                chunked_world,
+                commands,
+                rng=rng,
+                config=sim_config,
+                wind_fn=weather.get_wind_at,
             )
             current_world = world
 
@@ -587,7 +611,7 @@ async def simulation_loop() -> None:
             # Compute coverage across all generated chunks
             total_cells = 0
             explored_cells = 0
-            for coord, chunk in chunked_world._cache.items():
+            for _coord, chunk in chunked_world._cache.items():
                 total_cells += chunk.fog_grid.size
                 explored_cells += int(np.count_nonzero(chunk.fog_grid != FOG_UNEXPLORED))
             coverage_pct = (explored_cells / max(total_cells, 1)) * 100.0
@@ -616,8 +640,16 @@ async def simulation_loop() -> None:
                 "drones": [
                     {
                         "id": d.id,
-                        "position": [round(d.position.x, 1), round(d.position.y, 1), round(d.position.z, 1)],
-                        "velocity": [round(d.velocity.x, 1), round(d.velocity.y, 1), round(d.velocity.z, 1)],
+                        "position": [
+                            round(d.position.x, 1),
+                            round(d.position.y, 1),
+                            round(d.position.z, 1),
+                        ],
+                        "velocity": [
+                            round(d.velocity.x, 1),
+                            round(d.velocity.y, 1),
+                            round(d.velocity.z, 1),
+                        ],
                         "heading": round(d.heading, 3),
                         "battery": round(d.battery, 1),
                         "status": d.status.name.lower(),
@@ -626,7 +658,8 @@ async def simulation_loop() -> None:
                         "current_task": d.current_task,
                         "target": (
                             [round(d.target.x, 1), round(d.target.y, 1), round(d.target.z, 1)]
-                            if d.target else None
+                            if d.target
+                            else None
                         ),
                     }
                     for d in world.drones
@@ -634,7 +667,11 @@ async def simulation_loop() -> None:
                 "survivors": [
                     {
                         "id": s.id,
-                        "position": [round(s.position.x, 1), round(s.position.y, 1), round(s.position.z, 1)],
+                        "position": [
+                            round(s.position.x, 1),
+                            round(s.position.y, 1),
+                            round(s.position.z, 1),
+                        ],
                         "discovered": s.discovered,
                         "discovered_by": s.discovered_by,
                         "discovered_at_tick": s.discovered_at_tick,
@@ -645,7 +682,11 @@ async def simulation_loop() -> None:
                 "all_survivors": [
                     {
                         "id": s.id,
-                        "position": [round(s.position.x, 1), round(s.position.y, 1), round(s.position.z, 1)],
+                        "position": [
+                            round(s.position.x, 1),
+                            round(s.position.y, 1),
+                            round(s.position.z, 1),
+                        ],
                         "discovered": s.discovered,
                         "mobile": s.mobile,
                     }
@@ -654,14 +695,23 @@ async def simulation_loop() -> None:
                 "fog_grid": _compress_chunk_fog(world.fog_grid),
                 "comms_links": [list(link) for link in world.comms_links],
                 "events": [
-                    {"type": e.type.name.lower(), "tick": e.tick, "drone_id": e.drone_id, "survivor_id": e.survivor_id}
+                    {
+                        "type": e.type.name.lower(),
+                        "tick": e.tick,
+                        "drone_id": e.drone_id,
+                        "survivor_id": e.survivor_id,
+                    }
                     for e in world.events
                 ],
                 "evidence": [
                     {
                         "id": ev.id,
                         "kind": ev.kind,
-                        "position": [round(ev.position.x, 1), round(ev.position.y, 1), round(ev.position.z, 1)],
+                        "position": [
+                            round(ev.position.x, 1),
+                            round(ev.position.y, 1),
+                            round(ev.position.z, 1),
+                        ],
                         "confidence": round(ev.confidence, 2),
                         "heading": round(ev.heading, 3) if ev.heading is not None else None,
                         "age_hours": ev.age_hours,
@@ -682,10 +732,7 @@ async def simulation_loop() -> None:
 
             # One-shot notifications for each clue discovered this tick —
             # frontend uses these to pulse the heatmap / log the find.
-            newly_found_evidence = [
-                e for e in world.events
-                if e.type.name == "EVIDENCE_FOUND"
-            ]
+            newly_found_evidence = [e for e in world.events if e.type.name == "EVIDENCE_FOUND"]
 
             # PoC heatmap: send every 10 ticks (1 Hz at 10 Hz sim).
             # 64x64 grid at uint8 = 4KB per broadcast (cheap).
@@ -693,6 +740,7 @@ async def simulation_loop() -> None:
                 import base64
 
                 from src.simulation.search_map import SearchMap
+
                 sm: SearchMap = world.search_map  # type: ignore[assignment]
                 down = sm.downsample(64)
                 peak = max(float(down.max()), 1e-9)

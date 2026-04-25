@@ -91,6 +91,7 @@ def update_drone_physics(
     # Determine terrain size and height lookup
     if height_fn is not None and world_bounds is not None:
         terrain_w, terrain_h = world_bounds
+
         def _get_height(x: float, z: float) -> float:
             return height_fn(
                 min(max(x, 0.0), terrain_w - 1),
@@ -99,6 +100,7 @@ def update_drone_physics(
     else:
         assert terrain_heightmap is not None
         terrain_h, terrain_w = terrain_heightmap.shape
+
         def _get_height(x: float, z: float) -> float:
             ix = int(min(max(x, 0.0), terrain_w - 1))
             iz = int(min(max(z, 0.0), terrain_h - 1))
@@ -329,9 +331,9 @@ def detect_survivors(
 
         # --- Enhanced occlusion from config ---
         if biome_val == Biome.FOREST.value:
-            biome_mod *= (1.0 - config.canopy_occlusion)
+            biome_mod *= 1.0 - config.canopy_occlusion
         elif biome_val == Biome.URBAN.value:
-            biome_mod *= (1.0 - config.urban_occlusion)
+            biome_mod *= 1.0 - config.urban_occlusion
 
         # --- Altitude bonus ---
         drone_alt_above_terrain = max(drone.position.y - s.position.y, 1.0)
@@ -366,9 +368,7 @@ def detect_survivors(
             continue
 
         # --- Final effective range ---
-        effective_range = (
-            sr * biome_mod * alt_bonus * weather_mod * _DETECTION_GUARANTEED_RATIO
-        )
+        effective_range = sr * biome_mod * alt_bonus * weather_mod * _DETECTION_GUARANTEED_RATIO
         if dist_xz < effective_range:
             detected.append(s.id)
 

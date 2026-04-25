@@ -15,6 +15,8 @@ import threading
 
 import numpy as np
 
+# Import the RLE compression helper from main.py
+from src.server.main import _compress_chunk_fog
 from src.simulation.engine import tick_chunked
 from src.simulation.types import (
     FOG_EXPLORED,
@@ -25,9 +27,6 @@ from src.simulation.types import (
     WorldState,
 )
 from src.terrain.chunked import ChunkCoord, ChunkedWorld
-
-# Import the RLE compression helper from main.py
-from src.server.main import _compress_chunk_fog
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,8 +107,7 @@ def test_chunk_serialization_size():
     size_kb = len(blob) / 1024
 
     assert size_kb < 500, (
-        f"Serialized chunk is {size_kb:.1f}KB — expected < 500KB. "
-        f"Downsampling may have regressed."
+        f"Serialized chunk is {size_kb:.1f}KB — expected < 500KB. Downsampling may have regressed."
     )
 
 
@@ -127,8 +125,7 @@ def test_chunk_has_resolution_field():
     assert "resolution" in data, "Serialized chunk missing `resolution` field"
     assert isinstance(data["resolution"], int), "`resolution` must be an integer"
     assert data["resolution"] <= 256, (
-        f"resolution={data['resolution']} — should be <= 256 "
-        f"(downsampled for network transmission)"
+        f"resolution={data['resolution']} — should be <= 256 (downsampled for network transmission)"
     )
 
 
@@ -340,7 +337,9 @@ def test_survivor_proximity_boosts_priority_search():
 
     # With a survivor near patch B — should strongly prefer patch B
     survivor_near_b = Vec3(72.0, 0.0, 72.0)  # near (row=72, col=72)
-    result_with_surv = priority_search(drone_pos, fog, terrain, survivor_positions=[survivor_near_b])
+    result_with_surv = priority_search(
+        drone_pos, fog, terrain, survivor_positions=[survivor_near_b]
+    )
     assert result_with_surv is not None
     # Result should be close to patch B (row ~70, col ~70) not patch A (row ~20, col ~20)
     dist_to_b = ((result_with_surv.x - 70) ** 2 + (result_with_surv.z - 70) ** 2) ** 0.5

@@ -27,8 +27,8 @@ class GustRegion:
     center_z: float
     radius: float
     base_strength: float  # scales the oscillation amplitude (0..1)
-    period: float         # seconds per full cycle
-    phase: float          # phase offset, radians
+    period: float  # seconds per full cycle
+    phase: float  # phase offset, radians
 
 
 class WeatherSystem:
@@ -62,7 +62,8 @@ class WeatherSystem:
         # Discrete gust regions — seeded deterministically so the same seed
         # reproduces the same weather pattern.
         self._gust_regions: tuple[GustRegion, ...] = self._make_gust_regions(
-            seed, terrain_size,
+            seed,
+            terrain_size,
         )
 
     # ------------------------------------------------------------------

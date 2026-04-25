@@ -127,7 +127,11 @@ def tick(
     # --- 4b. Update mobile survivors (wander + flee from nearby drones) ---
     if rng is not None:
         updated_survivors = update_survivors(
-            world.survivors, world.terrain, dt, rng, drones=tuple(drones),
+            world.survivors,
+            world.terrain,
+            dt,
+            rng,
+            drones=tuple(drones),
         )
     else:
         updated_survivors = world.survivors
@@ -354,7 +358,10 @@ def tick_chunked(
     # --- 2. Update drone physics (chunked height lookup) ---
     drones = [
         update_drone_physics(
-            d, dt, None, config,
+            d,
+            dt,
+            None,
+            config,
             height_fn=cw.get_heightmap_at,
             world_bounds=bounds,
             wind_fn=wind_fn,
@@ -395,13 +402,16 @@ def tick_chunked(
     for chunk in active_chunks:
         all_survivors.extend(chunk.survivors)
 
-
     # Update mobile survivors (wander + flee from nearby drones)
     if rng is not None:
         survivors_tuple = tuple(all_survivors)
         # Use lightweight terrain stub for survivor updates
         survivors_tuple = update_survivors(
-            survivors_tuple, world.terrain, dt, rng, drones=tuple(drones),
+            survivors_tuple,
+            world.terrain,
+            dt,
+            rng,
+            drones=tuple(drones),
         )
     else:
         survivors_tuple = tuple(all_survivors)
@@ -413,7 +423,8 @@ def tick_chunked(
         if d.status == DroneStatus.FAILED:
             continue
         detected_ids = detect_survivors(
-            d, tuple(survivors),
+            d,
+            tuple(survivors),
             biome_fn=cw.get_biome_at,
             height_fn=cw.get_heightmap_at,
             config=config,
@@ -499,6 +510,7 @@ def tick_chunked(
     search_map = world.search_map
     if search_map is not None:
         from src.simulation.search_map import SearchMap
+
         sm: SearchMap = search_map  # type: ignore[assignment]
         for d in drones:
             if d.status == DroneStatus.FAILED or not d.sensor_active:
@@ -506,8 +518,7 @@ def tick_chunked(
             # Skip if the drone just discovered a survivor this tick — that cell
             # should NOT be PoC-reduced (the target is there, not absent).
             found_this_tick = any(
-                e.drone_id == d.id and e.type == EventType.SURVIVOR_FOUND
-                for e in events
+                e.drone_id == d.id and e.type == EventType.SURVIVOR_FOUND for e in events
             )
             if found_this_tick:
                 continue
@@ -630,7 +641,7 @@ def _update_chunk_fog(
         rr, cc = np.meshgrid(rows, cols, indexing="ij")
 
         dist_sq = (cc - local_x) ** 2 + (rr - local_z) ** 2
-        within_range = dist_sq <= drone.sensor_range ** 2
+        within_range = dist_sq <= drone.sensor_range**2
 
         tc.fog_grid[r_min:r_max, c_min:c_max] = np.where(
             within_range, FOG_EXPLORED, tc.fog_grid[r_min:r_max, c_min:c_max]

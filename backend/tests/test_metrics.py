@@ -44,12 +44,15 @@ def _mk_world(
 ) -> WorldState:
     fog = np.full((64, 64), FOG_UNEXPLORED, dtype=np.int8)
     terrain = Terrain(
-        width=256, height=256, max_elevation=100.0,
+        width=256,
+        height=256,
+        max_elevation=100.0,
         heightmap=np.zeros((256, 256), dtype=np.float32),
         biome_map=np.zeros((256, 256), dtype=np.int32),
     )
     return WorldState(
-        tick=tick, elapsed=elapsed,
+        tick=tick,
+        elapsed=elapsed,
         terrain=terrain,
         drones=drones,
         survivors=survivors,
@@ -61,12 +64,18 @@ def _mk_world(
 
 
 def _drone(
-    id_: int = 0, x: float = 0.0, z: float = 0.0,
-    status: DroneStatus = DroneStatus.ACTIVE, battery: float = 100.0,
+    id_: int = 0,
+    x: float = 0.0,
+    z: float = 0.0,
+    status: DroneStatus = DroneStatus.ACTIVE,
+    battery: float = 100.0,
 ) -> Drone:
     return Drone(
-        id=id_, position=Vec3(x, 50.0, z),
-        status=status, battery=battery, sensor_active=True,
+        id=id_,
+        position=Vec3(x, 50.0, z),
+        status=status,
+        battery=battery,
+        sensor_active=True,
     )
 
 
@@ -76,8 +85,10 @@ def _survivor(id_: int, discovered: bool = False) -> Survivor:
 
 def _evidence(id_: int, discovered: bool = False) -> Evidence:
     return Evidence(
-        id=id_, position=Vec3(100.0, 0.0, 100.0),
-        kind=EvidenceKind.SIGNAL_FIRE.value, discovered=discovered,
+        id=id_,
+        position=Vec3(100.0, 0.0, 100.0),
+        kind=EvidenceKind.SIGNAL_FIRE.value,
+        discovered=discovered,
     )
 
 
@@ -97,18 +108,24 @@ class TestSurvivorTimeline:
 
     def test_records_per_survivor_times(self) -> None:
         m = MetricsTracker()
-        m.record_tick(_mk_world(
-            elapsed=10.0,
-            survivors=(_survivor(1, True), _survivor(2, False), _survivor(3, False)),
-        ))
-        m.record_tick(_mk_world(
-            elapsed=30.0,
-            survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, False)),
-        ))
-        m.record_tick(_mk_world(
-            elapsed=50.0,
-            survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, True)),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=10.0,
+                survivors=(_survivor(1, True), _survivor(2, False), _survivor(3, False)),
+            )
+        )
+        m.record_tick(
+            _mk_world(
+                elapsed=30.0,
+                survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, False)),
+            )
+        )
+        m.record_tick(
+            _mk_world(
+                elapsed=50.0,
+                survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, True)),
+            )
+        )
         card = m.scorecard()
         assert card["survivors"]["discovery_timeline"] == [10.0, 30.0, 50.0]
         # MTTD = mean of discovery times = (10 + 30 + 50) / 3 = 30.0
@@ -149,14 +166,18 @@ class TestSurvivalWindow:
         mission = _StubMission(survival_window_seconds=60.0)
         m = MetricsTracker(mission=mission)
         # 2 found at t=30, 1 found at t=90 (past the window)
-        m.record_tick(_mk_world(
-            elapsed=30.0,
-            survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, False)),
-        ))
-        m.record_tick(_mk_world(
-            elapsed=90.0,
-            survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, True)),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=30.0,
+                survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, False)),
+            )
+        )
+        m.record_tick(
+            _mk_world(
+                elapsed=90.0,
+                survivors=(_survivor(1, True), _survivor(2, True), _survivor(3, True)),
+            )
+        )
         card = m.scorecard()
         assert card["survivors"]["found_in_survival_window"] == 2
         assert card["survivors"]["survival_window_pct"] == round(2 / 3 * 100, 1)
@@ -191,17 +212,21 @@ class TestEvidenceTiming:
         mission = _StubMission(evidence=[_evidence(1)])
         m = MetricsTracker(mission=mission)
         # t=10: evidence found, no survivors yet
-        m.record_tick(_mk_world(
-            elapsed=10.0,
-            evidence=(_evidence(1, True),),
-            survivors=(_survivor(1, False),),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=10.0,
+                evidence=(_evidence(1, True),),
+                survivors=(_survivor(1, False),),
+            )
+        )
         # t=35: survivor found
-        m.record_tick(_mk_world(
-            elapsed=35.0,
-            evidence=(_evidence(1, True),),
-            survivors=(_survivor(1, True),),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=35.0,
+                evidence=(_evidence(1, True),),
+                survivors=(_survivor(1, True),),
+            )
+        )
         card = m.scorecard()
         assert card["evidence"]["evidence_to_survivor_latency"] == 25.0
 
@@ -211,23 +236,29 @@ class TestEvidenceTiming:
         mission = _StubMission(evidence=[_evidence(1)])
         m = MetricsTracker(mission=mission)
         # t=5: survivor found (before any evidence)
-        m.record_tick(_mk_world(
-            elapsed=5.0,
-            evidence=(_evidence(1, False),),
-            survivors=(_survivor(1, True),),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=5.0,
+                evidence=(_evidence(1, False),),
+                survivors=(_survivor(1, True),),
+            )
+        )
         # t=20: evidence found
-        m.record_tick(_mk_world(
-            elapsed=20.0,
-            evidence=(_evidence(1, True),),
-            survivors=(_survivor(1, True),),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=20.0,
+                evidence=(_evidence(1, True),),
+                survivors=(_survivor(1, True),),
+            )
+        )
         # t=50: second survivor found (first real "after-evidence" find)
-        m.record_tick(_mk_world(
-            elapsed=50.0,
-            evidence=(_evidence(1, True),),
-            survivors=(_survivor(1, True), _survivor(2, True)),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=50.0,
+                evidence=(_evidence(1, True),),
+                survivors=(_survivor(1, True), _survivor(2, True)),
+            )
+        )
         card = m.scorecard()
         # Latency = 50 - 20 = 30, not 5 - 20 (negative)
         assert card["evidence"]["evidence_to_survivor_latency"] == 30.0
@@ -302,15 +333,19 @@ class TestResources:
 
     def test_meters_per_find(self) -> None:
         m = MetricsTracker()
-        m.record_tick(_mk_world(
-            drones=(_drone(0, x=0.0, z=0.0),),
-            survivors=(_survivor(1, False),),
-        ))
-        m.record_tick(_mk_world(
-            elapsed=1.0,
-            drones=(_drone(0, x=100.0, z=0.0),),
-            survivors=(_survivor(1, True),),
-        ))
+        m.record_tick(
+            _mk_world(
+                drones=(_drone(0, x=0.0, z=0.0),),
+                survivors=(_survivor(1, False),),
+            )
+        )
+        m.record_tick(
+            _mk_world(
+                elapsed=1.0,
+                drones=(_drone(0, x=100.0, z=0.0),),
+                survivors=(_survivor(1, True),),
+            )
+        )
         card = m.scorecard()
         assert card["resources"]["meters_per_find"] == 100.0
 
@@ -336,9 +371,14 @@ class TestScorecardShape:
         m.record_tick(_mk_world())
         card = m.scorecard()
         assert set(card.keys()) >= {
-            "mission", "seed", "elapsed",
-            "survivors", "evidence", "search_quality",
-            "resources", "events",
+            "mission",
+            "seed",
+            "elapsed",
+            "survivors",
+            "evidence",
+            "search_quality",
+            "resources",
+            "events",
         }
 
     def test_scorecard_survives_empty_world(self) -> None:
@@ -351,12 +391,15 @@ class TestScorecardShape:
 
     def test_scorecard_is_json_safe(self) -> None:
         import json
+
         m = MetricsTracker(mission=_StubMission(evidence=[_evidence(1)]))
-        m.record_tick(_mk_world(
-            elapsed=5.0,
-            evidence=(_evidence(1, True),),
-            survivors=(_survivor(1, True),),
-        ))
+        m.record_tick(
+            _mk_world(
+                elapsed=5.0,
+                evidence=(_evidence(1, True),),
+                survivors=(_survivor(1, True),),
+            )
+        )
         # Round-trip through JSON — this catches any np.float32/int64 leakage
         encoded = json.dumps(m.scorecard())
         decoded = json.loads(encoded)

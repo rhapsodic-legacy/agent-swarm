@@ -304,27 +304,42 @@ class SearchMap:
             if heading is None:
                 heading = 0.0
             self._apply_cone(
-                weight, px, pz, heading,
-                radius_m=800.0, half_angle=0.61,
+                weight,
+                px,
+                pz,
+                heading,
+                radius_m=800.0,
+                half_angle=0.61,
                 peak=1.0 + 3.0 * confidence,
             )
         elif kind == "debris":
             # Ring at ~400m, peak boost 2.5× at the ring, falling off.
             self._apply_ring(
-                weight, px, pz,
-                ring_radius_m=400.0, sigma_m=200.0,
+                weight,
+                px,
+                pz,
+                ring_radius_m=400.0,
+                sigma_m=200.0,
                 peak=1.0 + 1.5 * confidence,
             )
         elif kind == "signal_fire":
             # Tight circle: 500m radius, very high boost at center
             # (active survivor signaling → they're right there).
             self._apply_gaussian_boost(
-                weight, px, pz, radius_m=500.0, peak=1.0 + 6.0 * confidence,
+                weight,
+                px,
+                pz,
+                radius_m=500.0,
+                peak=1.0 + 6.0 * confidence,
             )
         else:
             # Unknown kind — isotropic moderate boost.
             self._apply_gaussian_boost(
-                weight, px, pz, radius_m=400.0, peak=1.0 + 1.0 * confidence,
+                weight,
+                px,
+                pz,
+                radius_m=400.0,
+                peak=1.0 + 1.0 * confidence,
             )
 
         return weight
@@ -478,7 +493,7 @@ class SearchMap:
         if exclude_cells:
             # Mask out excluded cells by setting them to -inf
             flat = flat.copy()
-            for (ex_col, ex_row) in exclude_cells:
+            for ex_col, ex_row in exclude_cells:
                 if 0 <= ex_row < self.poc.shape[0] and 0 <= ex_col < cols:
                     flat[ex_row * cols + ex_col] = -np.inf
 

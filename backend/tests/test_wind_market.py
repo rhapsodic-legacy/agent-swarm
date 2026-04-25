@@ -109,10 +109,10 @@ def test_sweep_waypoints_scrubbed_inside_active_gust():
     # Pick any agent and give it a sweep queue straddling a boundary.
     agent = next(iter(coord.agents.values()))
     agent.local_sweep_waypoints = [
-        Vec3(10.0, 10.0, 10.0),   # safe (west)
-        Vec3(50.0, 10.0, 10.0),   # inside gust (east of x=40)
-        Vec3(20.0, 10.0, 20.0),   # safe
-        Vec3(60.0, 10.0, 30.0),   # inside gust
+        Vec3(10.0, 10.0, 10.0),  # safe (west)
+        Vec3(50.0, 10.0, 10.0),  # inside gust (east of x=40)
+        Vec3(20.0, 10.0, 20.0),  # safe
+        Vec3(60.0, 10.0, 30.0),  # inside gust
     ]
     agent.current_target = None  # so we exercise the waypoint branch, not target branch
 

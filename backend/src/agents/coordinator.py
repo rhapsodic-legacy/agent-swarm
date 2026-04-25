@@ -16,6 +16,7 @@ from enum import Enum, auto
 
 import numpy as np
 
+from src.agents.adaptive_weights import AdaptiveWeights
 from src.agents.biome_profiles import (
     BiomeFlightProfile,
     get_profile_at_position,
@@ -25,7 +26,6 @@ from src.agents.mission_planner import MissionPlanner
 from src.agents.pathfinding import (
     potential_field_direction,
 )
-from src.agents.adaptive_weights import AdaptiveWeights
 from src.agents.priority_market import (
     PriorityAsset,
     PriorityWeights,
@@ -138,9 +138,9 @@ class IntelPin:
     pin_id: str
     x: float
     z: float
-    radius: float           # effective influence radius (meters)
-    value: float            # base urgency (1.0 = normal; raise for critical intel)
-    label: str              # operator-facing note ("valley check", "last known sighting")
+    radius: float  # effective influence radius (meters)
+    value: float  # base urgency (1.0 = normal; raise for critical intel)
+    label: str  # operator-facing note ("valley check", "last known sighting")
     created_tick: int
     expires_tick: int | None = None  # None = persistent until dismissed
 
@@ -248,7 +248,9 @@ class SwarmCoordinator:
         # refreshed every tick by the caller via update(wind_hazard_fn=...).
         self._wind_hazard_fn: Callable[[float, float], bool] | None = None
 
-    def _log(self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info") -> None:
+    def _log(
+        self, tick: int, elapsed: float, drone_id: int | None, message: str, category: str = "info"
+    ) -> None:
         """Append an entry to the activity log ring buffer."""
         entry = {
             "tick": tick,
@@ -259,7 +261,7 @@ class SwarmCoordinator:
         }
         self._activity_log.append(entry)
         if len(self._activity_log) > self._max_log_entries:
-            self._activity_log = self._activity_log[-self._max_log_entries:]
+            self._activity_log = self._activity_log[-self._max_log_entries :]
 
     def get_recent_log(self, since_tick: int = 0) -> list[dict]:
         """Return log entries since the given tick (for incremental frontend updates)."""
@@ -296,7 +298,9 @@ class SwarmCoordinator:
             if existing is not None:
                 self._poc_cache_tick = -1
                 self._log(
-                    tick, elapsed, None,
+                    tick,
+                    elapsed,
+                    None,
                     f"Zone '{zone_id}' ({existing.priority}) deleted.",
                     "decision",
                 )
@@ -307,7 +311,9 @@ class SwarmCoordinator:
         priority = (command.priority or data.get("priority") or "").lower()
         if priority not in ZONE_PRIORITIES:
             self._log(
-                tick, elapsed, None,
+                tick,
+                elapsed,
+                None,
                 f"Zone '{zone_id}' ignored — invalid priority '{priority}'.",
                 "alert",
             )
@@ -326,7 +332,9 @@ class SwarmCoordinator:
                 )
                 self._poc_cache_tick = -1
                 self._log(
-                    tick, elapsed, None,
+                    tick,
+                    elapsed,
+                    None,
                     f"Zone '{zone_id}' priority → {priority}.",
                     "decision",
                 )
@@ -370,7 +378,9 @@ class SwarmCoordinator:
             except Exception:
                 pass
         self._log(
-            tick, elapsed, None,
+            tick,
+            elapsed,
+            None,
             f"{verb} {priority}-priority zone '{zone_id}' ({w:.0f}×{h:.0f}m){overlap_note}.",
             "decision",
         )
@@ -408,7 +418,9 @@ class SwarmCoordinator:
                 agent.ticks_at_target = 0
 
     def _invalidate_targets_in_wind_gusts(
-        self, world: WorldState, wind_hazard_fn: Callable[[float, float], bool],
+        self,
+        world: WorldState,
+        wind_hazard_fn: Callable[[float, float], bool],
     ) -> None:
         """Drop any target that's inside an active gust this tick.
 
@@ -432,8 +444,7 @@ class SwarmCoordinator:
             # Also scrub queued sweep waypoints that land in an active gust.
             if agent.local_sweep_waypoints:
                 agent.local_sweep_waypoints = [
-                    wp for wp in agent.local_sweep_waypoints
-                    if not wind_hazard_fn(wp.x, wp.z)
+                    wp for wp in agent.local_sweep_waypoints if not wind_hazard_fn(wp.x, wp.z)
                 ] or None
 
     def _zone_multiplier(self, x: float, z: float) -> float:
@@ -473,7 +484,9 @@ class SwarmCoordinator:
 
     # ------------------------------------------------------------ intel pins
     def apply_intel_pin_command(
-        self, command: Command, world: WorldState | None = None,
+        self,
+        command: Command,
+        world: WorldState | None = None,
     ) -> None:
         """Create, delete, or clear LLM-injected / operator intel pins.
 
@@ -506,7 +519,9 @@ class SwarmCoordinator:
             if existing is not None:
                 self._poc_cache_tick = -1
                 self._log(
-                    tick, elapsed, None,
+                    tick,
+                    elapsed,
+                    None,
                     f"Intel pin '{pin_id}' ({existing.label or 'unnamed'}) dismissed.",
                     "decision",
                 )
@@ -526,15 +541,22 @@ class SwarmCoordinator:
             expires_tick = int(tick + float(ttl_s) * world.tick_rate)
 
         pin = IntelPin(
-            pin_id=pin_id, x=x, z=z,
-            radius=radius, value=value, label=label,
-            created_tick=tick, expires_tick=expires_tick,
+            pin_id=pin_id,
+            x=x,
+            z=z,
+            radius=radius,
+            value=value,
+            label=label,
+            created_tick=tick,
+            expires_tick=expires_tick,
         )
         self.intel_pins[pin_id] = pin
         self._poc_cache_tick = -1  # force market rebuild
 
         self._log(
-            tick, elapsed, None,
+            tick,
+            elapsed,
+            None,
             f"Intel pin '{pin_id}' placed at ({x:.0f}, {z:.0f})"
             + (f" — {label}" if label else "")
             + (f" [ttl {ttl_s:.0f}s]" if ttl_s is not None else ""),
@@ -546,13 +568,16 @@ class SwarmCoordinator:
         if not self.intel_pins:
             return
         expired = [
-            pid for pid, p in self.intel_pins.items()
+            pid
+            for pid, p in self.intel_pins.items()
             if p.expires_tick is not None and world.tick >= p.expires_tick
         ]
         for pid in expired:
             pin = self.intel_pins.pop(pid)
             self._log(
-                world.tick, world.elapsed, None,
+                world.tick,
+                world.elapsed,
+                None,
                 f"Intel pin '{pid}' expired ({pin.label or 'unnamed'}).",
                 "info",
             )
@@ -684,15 +709,26 @@ class SwarmCoordinator:
             self._assign_zones(world)
             self.zones_assigned = True
             active = sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE)
-            self._log(world.tick, world.elapsed, None, f"Zones assigned to {active} drones. Beginning spread.", "decision")
+            self._log(
+                world.tick,
+                world.elapsed,
+                None,
+                f"Zones assigned to {active} drones. Beginning spread.",
+                "decision",
+            )
 
         # Update mission phase based on coverage
         coverage = self._get_coverage(world.fog_grid)
         old_phase = self.phase
         self._update_phase(coverage)
         if self.phase != old_phase:
-            self._log(world.tick, world.elapsed, None,
-                      f"Phase: {old_phase.name} → {self.phase.name} (coverage {coverage:.1f}%)", "decision")
+            self._log(
+                world.tick,
+                world.elapsed,
+                None,
+                f"Phase: {old_phase.name} → {self.phase.name} (coverage {coverage:.1f}%)",
+                "decision",
+            )
 
         # Share knowledge between connected drones
         self._share_knowledge(world)
@@ -701,8 +737,13 @@ class SwarmCoordinator:
         evidence_this_tick = 0
         for event in world.events:
             if event.type.name == "SURVIVOR_FOUND":
-                self._log(world.tick, world.elapsed, event.drone_id,
-                          f"Survivor #{event.survivor_id} found!", "event")
+                self._log(
+                    world.tick,
+                    world.elapsed,
+                    event.drone_id,
+                    f"Survivor #{event.survivor_id} found!",
+                    "event",
+                )
                 # Adaptive attribution: credit the operator asset(s) whose
                 # area includes the find location (if any).
                 if event.survivor_id is not None:
@@ -720,21 +761,34 @@ class SwarmCoordinator:
                         for _src, asset_key in credited:
                             self._credited_assets.add(asset_key)
             elif event.type.name == "DRONE_FAILED":
-                self._log(world.tick, world.elapsed, event.drone_id,
-                          "Drone failed — battery depleted.", "alert")
+                self._log(
+                    world.tick,
+                    world.elapsed,
+                    event.drone_id,
+                    "Drone failed — battery depleted.",
+                    "alert",
+                )
             elif event.type.name == "DRONE_RETURNED":
-                self._log(world.tick, world.elapsed, event.drone_id,
-                          "Returned to base. Recharging.", "info")
+                self._log(
+                    world.tick,
+                    world.elapsed,
+                    event.drone_id,
+                    "Returned to base. Recharging.",
+                    "info",
+                )
             elif event.type.name == "DRONE_COMMS_LOST":
-                self._log(world.tick, world.elapsed, event.drone_id,
-                          "Comms lost — out of range.", "alert")
+                self._log(
+                    world.tick, world.elapsed, event.drone_id, "Comms lost — out of range.", "alert"
+                )
             elif event.type.name == "EVIDENCE_FOUND":
                 evidence_this_tick += 1
                 data = event.data or {}
                 kind = data.get("kind", "evidence")
                 pos = data.get("position", [0, 0, 0])
                 self._log(
-                    world.tick, world.elapsed, event.drone_id,
+                    world.tick,
+                    world.elapsed,
+                    event.drone_id,
                     f"Evidence: {kind} at ({pos[0]:.0f}, {pos[2]:.0f}). Updating search.",
                     "event",
                 )
@@ -757,7 +811,13 @@ class SwarmCoordinator:
 
         if self.mission_planner.should_plan(world):
             self.mission_planner.trigger_plan(world)
-            self._log(world.tick, world.elapsed, None, "Mission planner re-evaluating strategy...", "decision")
+            self._log(
+                world.tick,
+                world.elapsed,
+                None,
+                "Mission planner re-evaluating strategy...",
+                "decision",
+            )
 
         directive = self.mission_planner.consume_result()
         if directive:
@@ -795,8 +855,13 @@ class SwarmCoordinator:
                 commands.append(
                     Command(type="return_to_base", drone_id=drone.id, target=world.base_position)
                 )
-                self._log(world.tick, world.elapsed, drone.id,
-                          f"RTB — battery {drone.battery:.0f}%, need fuel for return trip.", "alert")
+                self._log(
+                    world.tick,
+                    world.elapsed,
+                    drone.id,
+                    f"RTB — battery {drone.battery:.0f}%, need fuel for return trip.",
+                    "alert",
+                )
                 continue
 
             # LLM decision
@@ -806,8 +871,9 @@ class SwarmCoordinator:
                 if cmd is not None:
                     commands.append(cmd)
                     reasoning = llm_decision.get("reasoning", llm_decision.get("action", ""))
-                    self._log(world.tick, world.elapsed, drone.id,
-                              f"AI decision: {reasoning}", "decision")
+                    self._log(
+                        world.tick, world.elapsed, drone.id, f"AI decision: {reasoning}", "decision"
+                    )
                     continue
 
             # Classical AI
@@ -1026,9 +1092,7 @@ class SwarmCoordinator:
                 # Enqueue a local sweep — the drone will visit the hotspot
                 # center first (this return), then these perimeter points
                 # before selecting a new hotspot.
-                agent.local_sweep_waypoints = _generate_local_sweep_waypoints(
-                    poc_target
-                )
+                agent.local_sweep_waypoints = _generate_local_sweep_waypoints(poc_target)
                 return poc_target
             # No reachable hot cell (likely low battery or far from hotspots).
             # Return to base rather than picking an unreachable target.
@@ -1130,13 +1194,15 @@ class SwarmCoordinator:
         # evidence events / zone changes via `_poc_cache_tick = -1`).
         world_size = max(world.terrain.width, world.terrain.height)
         active_count = max(
-            sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE), 1,
+            sum(1 for d in world.drones if d.status == DroneStatus.ACTIVE),
+            1,
         )
         hotspot_separation = 0.4 * (world_size / math.sqrt(active_count))
         if self._poc_cache_tick != world.tick:
             n_spots = active_count * 2 + 5
             self._poc_hottest = sm.diverse_hotspots(
-                n_spots, min_separation_meters=hotspot_separation,
+                n_spots,
+                min_separation_meters=hotspot_separation,
             )
             self._poc_claimed = set()
             self._poc_cache_tick = world.tick
@@ -1190,9 +1256,7 @@ class SwarmCoordinator:
         def is_in_avoid(x: float, z: float) -> bool:
             if any(zone.contains(x, z) for zone in avoid_zones):
                 return True
-            if wind_hazard_fn is not None and wind_hazard_fn(x, z):
-                return True
-            return False
+            return wind_hazard_fn is not None and wind_hazard_fn(x, z)
 
         has_avoid = bool(avoid_zones) or wind_hazard_fn is not None
 

@@ -54,7 +54,10 @@ def _setup_world_with_evidence(
     )
     # Use a trivial cluster layout so the ChunkedWorld is happy
     cw = ChunkedWorld(
-        WORLD_SIZE, CHUNK_SIZE, SEED, config,
+        WORLD_SIZE,
+        CHUNK_SIZE,
+        SEED,
+        config,
         clusters=[(5000.0, 5000.0, 300.0, 1.0)],
     )
     drone = Drone(
@@ -102,7 +105,8 @@ def test_drone_on_top_of_signal_fire_discovers_it() -> None:
         confidence=0.9,
     )
     world, cw, config = _setup_world_with_evidence(
-        [ev], Vec3(5000.0, 50.0, 5000.0),
+        [ev],
+        Vec3(5000.0, 50.0, 5000.0),
     )
 
     # Take one tick
@@ -127,12 +131,14 @@ def test_evidence_discovery_reshapes_poc_posterior() -> None:
     concentrate mass near the clue (see test_signal_fire_reshapes_mass_toward_clue
     in test_evidence.py for the nuance)."""
     world, cw, config = _setup_world_with_evidence(
-        [Evidence(
-            id=1,
-            position=Vec3(7500.0, 0.0, 7500.0),
-            kind=EvidenceKind.SIGNAL_FIRE.value,
-            confidence=0.9,
-        )],
+        [
+            Evidence(
+                id=1,
+                position=Vec3(7500.0, 0.0, 7500.0),
+                kind=EvidenceKind.SIGNAL_FIRE.value,
+                confidence=0.9,
+            )
+        ],
         Vec3(7500.0, 50.0, 7500.0),
     )
     sm = world.search_map  # type: ignore[assignment]
@@ -167,7 +173,8 @@ def test_evidence_far_from_drone_stays_undiscovered() -> None:
     )
     # Drone 500m away — way outside the 60m footprint base range.
     world, cw, config = _setup_world_with_evidence(
-        [ev], Vec3(5500.0, 50.0, 5500.0),
+        [ev],
+        Vec3(5500.0, 50.0, 5500.0),
     )
     new_world = tick_chunked(world, dt=0.1, chunked_world=cw, config=config)
     assert all(not e.discovered for e in new_world.evidence)
@@ -183,12 +190,16 @@ def test_lost_hiker_mission_evidence_flows_into_world_state() -> None:
     config = SimConfig(drone_count=1, survivor_count=1)
     cw = ChunkedWorld(WORLD_SIZE, CHUNK_SIZE, SEED, config, clusters=m.clusters)
     world = WorldState(
-        tick=0, elapsed=0.0,
+        tick=0,
+        elapsed=0.0,
         terrain=Terrain(
-            width=WORLD_SIZE, height=WORLD_SIZE, max_elevation=200.0,
+            width=WORLD_SIZE,
+            height=WORLD_SIZE,
+            max_elevation=200.0,
             heightmap=cw.make_heightmap_proxy(),
             biome_map=cw.make_biome_proxy(),
-            survivors=(), seed=SEED,
+            survivors=(),
+            seed=SEED,
         ),
         drones=(),
         survivors=(),
@@ -211,7 +222,8 @@ def test_coordinator_logs_evidence_discovery() -> None:
         confidence=0.9,
     )
     world, cw, config = _setup_world_with_evidence(
-        [ev], Vec3(5000.0, 50.0, 5000.0),
+        [ev],
+        Vec3(5000.0, 50.0, 5000.0),
     )
     new_world = tick_chunked(world, dt=0.1, chunked_world=cw, config=config)
 
