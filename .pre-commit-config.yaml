@@ -1,0 +1,44 @@
+# Pre-commit hooks — install with `make install-hooks` (or `pre-commit install`).
+#
+# Runs on every `git commit`. Catches lint / format / type errors before bad
+# code lands on main. If a hook modifies files (e.g. ruff format), the commit
+# is rejected so you can review the change, then commit again.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      - id: ruff
+        name: ruff (lint) — Python
+        args: [--fix]
+        files: ^backend/
+      - id: ruff-format
+        name: ruff (format) — Python
+        files: ^backend/
+
+  - repo: local
+    hooks:
+      - id: tsc
+        name: tsc --noEmit — TypeScript
+        entry: bash -c 'cd frontend && npx --no-install tsc --noEmit'
+        language: system
+        files: ^frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+
+      - id: vitest
+        name: vitest — frontend unit tests
+        entry: bash -c 'cd frontend && npx --no-install vitest run --silent'
+        language: system
+        files: ^frontend/src/.*\.(ts|tsx)$
+        pass_filenames: false
+
+  # Generic hygiene — the standard trio most repos ship.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=500]

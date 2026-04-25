@@ -17,8 +17,9 @@ A real-time, browser-visualized simulation of an autonomous drone swarm performi
 ## Quick Start
 
 ```bash
-make install   # Python + Node dependencies
-make run       # Backend :8765 + frontend :5173
+make install        # Python + Node dependencies
+make install-hooks  # Optional: enable pre-commit checks (ruff + tsc + vitest)
+make run            # Backend :8765 + frontend :5173
 # Open http://localhost:5173
 ```
 

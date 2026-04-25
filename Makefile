@@ -1,11 +1,12 @@
-.PHONY: install run backend frontend test lint typecheck clean reset help
+.PHONY: install install-hooks run backend frontend test lint typecheck clean reset help
 
 # Default: show help
 help:
 	@echo "Drone Swarm Coordinator — Commands"
 	@echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-	@echo "  make install    Install all dependencies (Python + Node)"
-	@echo "  make run        Start backend + frontend (open http://localhost:5173)"
+	@echo "  make install       Install all dependencies (Python + Node)"
+	@echo "  make install-hooks Install git pre-commit hooks (lint + typecheck)"
+	@echo "  make run           Start backend + frontend (open http://localhost:5173)"
 	@echo "  make backend    Start backend server only"
 	@echo "  make frontend   Start frontend dev server only"
 	@echo "  make test       Run all tests"
@@ -25,7 +26,19 @@ install:
 	@echo "Installing frontend dependencies..."
 	@eval "$$(fnm env 2>/dev/null)" && cd frontend && npm install
 	@echo ""
-	@echo "Done! Run 'make run' to start."
+	@echo "Done! Run 'make install-hooks' to enable pre-commit checks, or 'make run' to start."
+
+# Install git pre-commit hooks — requires pre-commit (pip install pre-commit or
+# brew install pre-commit). Runs ruff + tsc + vitest + standard hygiene on every
+# git commit.
+install-hooks:
+	@command -v pre-commit >/dev/null 2>&1 || { \
+		echo "pre-commit not found. Install with: pip install pre-commit"; \
+		exit 1; \
+	}
+	pre-commit install
+	@echo "Hooks installed. They run on every 'git commit'."
+	@echo "To run them manually across the whole tree: pre-commit run --all-files"
 
 # Run both backend and frontend
 run:
