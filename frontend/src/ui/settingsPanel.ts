@@ -20,6 +20,9 @@ export interface SimSettings {
   weather_visibility: number;
   night_penalty: number;
   transponder_ratio: number;
+  // Optional: total world size in meters (default 10240). Backend validates
+  // to a safe range. Only sent when a preset overrides it.
+  world_size?: number;
 }
 
 const DEFAULT_MISSION = "aircraft_crash";
@@ -65,11 +68,15 @@ const PARAMETERS: ParameterDef[] = [
   { key: "transponder_ratio", label: "Transponder %", min: 0, max: 0.5, default: 0.15, step: 0.05 },
 ];
 
+// `world_size` (when set) overrides the default 10240m × 10240m world.
+// "Huge" = 20km square — 4× chunk count, lazy-generated so memory only
+// grows with explored area.
 const PRESETS: Preset[] = [
   { name: "Small", values: { terrain_size: 128, drone_count: 10, survivor_count: 8 } },
   { name: "Medium", values: { terrain_size: 512, drone_count: 20, survivor_count: 25 } },
   { name: "Large", values: { terrain_size: 768, drone_count: 40, survivor_count: 40 } },
   { name: "Massive", values: { terrain_size: 1024, drone_count: 60, survivor_count: 60 } },
+  { name: "Huge (20km)", values: { terrain_size: 1024, drone_count: 80, survivor_count: 100, world_size: 20480 } },
 ];
 
 const STYLE_ID = "settings-panel-styles";

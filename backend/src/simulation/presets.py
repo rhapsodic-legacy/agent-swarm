@@ -31,6 +31,13 @@ PRESETS: dict[str, SimConfig] = {
         sensor_failure_prob=0.0002,
         comms_failure_prob=0.0001,
     ),
+    "huge": SimConfig(
+        terrain_size=1024,
+        drone_count=80,
+        survivor_count=100,
+        drone_battery_drain_rate=0.02,
+        sensor_failure_prob=0.0001,
+    ),
 }
 
 

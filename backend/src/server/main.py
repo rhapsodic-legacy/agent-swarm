@@ -307,7 +307,7 @@ async def _handle_chat(websocket: WebSocket, message: str) -> None:
 async def simulation_loop() -> None:
     """Main simulation loop — runs as a background async task."""
     global pending_commands, sim_reset_requested, current_world, pending_reset_config, sim_config
-    global current_mission, current_mission_name
+    global current_mission, current_mission_name, chunked_config
 
     logger.info("Initializing chunked world (%dm, %dm chunks)...",
                 chunked_config.world_size, chunked_config.chunk_size)
@@ -422,6 +422,26 @@ async def simulation_loop() -> None:
                 detection_requires_los=sim_config.detection_requires_los,
                 transponder_range=sim_config.transponder_range,
             )
+
+            # Optional world_size override (e.g. "Huge" preset). Validated to a
+            # safe range so a malformed client can't ask for a 1km-square world
+            # or 100km world that'd OOM the chunk cache.
+            requested_world_size = int(cfg.get("world_size", chunked_config.world_size))
+            if requested_world_size != chunked_config.world_size:
+                if 2048 <= requested_world_size <= 30720:
+                    chunked_config = ChunkedWorldConfig(
+                        world_size=requested_world_size,
+                        chunk_size=chunked_config.chunk_size,
+                        seed=chunked_config.seed,
+                    )
+                    world_size = chunked_config.world_size
+                    fog_res = max(world_size // 10, 256)
+                    logger.info("Reset world_size → %dm", world_size)
+                else:
+                    logger.warning(
+                        "Ignoring out-of-range world_size=%d (allowed: 2048..30720)",
+                        requested_world_size,
+                    )
 
             # Pick mission for the reset (defaults to current).
             mission_name = str(cfg.get("mission", current_mission_name))
