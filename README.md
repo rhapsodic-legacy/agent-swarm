@@ -2,7 +2,7 @@
 
 A real-time, browser-visualized simulation of an autonomous drone swarm performing search-and-rescue over procedurally generated terrain — with a unified priority-market substrate that fuses operator intent, LLM strategy, and environmental hazards into one signal the swarm bids on every tick.
 
-![Agents](https://img.shields.io/badge/agents-hybrid_classical+LLM-00c8ff) ![Python](https://img.shields.io/badge/python-3.12-blue) ![Three.js](https://img.shields.io/badge/three.js-WebGL-green) ![Claude](https://img.shields.io/badge/claude-mission_planner-ff6b00) ![Mistral](https://img.shields.io/badge/mistral-drone_reasoner-purple) ![Tests](https://img.shields.io/badge/tests-304_backend_+_11_frontend-success)
+[![CI](https://github.com/rhapsodic-legacy/agent-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/rhapsodic-legacy/agent-swarm/actions/workflows/ci.yml) ![Agents](https://img.shields.io/badge/agents-hybrid_classical+LLM-00c8ff) ![Python](https://img.shields.io/badge/python-3.12-blue) ![Three.js](https://img.shields.io/badge/three.js-WebGL-green) ![Claude](https://img.shields.io/badge/claude-mission_planner-ff6b00) ![Mistral](https://img.shields.io/badge/mistral-drone_reasoner-purple) ![License](https://img.shields.io/badge/license-MIT-blue)
 
 ---
 
