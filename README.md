@@ -1,4 +1,4 @@
-# Autonomous Drone Swarm Coordination Simulator                  
+# Autonomous Drone Swarm Coordination Simulator                   
 
 A real-time, browser-visualized simulation of an autonomous drone swarm performing search-and-rescue over procedurally generated terrain — with a unified priority-market substrate that fuses operator intent, LLM strategy, and environmental hazards into one signal the swarm bids on every tick.
 
